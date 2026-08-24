@@ -161,7 +161,9 @@ contenido en dos lados diverge, porque nadie actualiza dos veces.
 | `docs/adr/` | Una entrada por decisión, con su razón. **Nunca se corrige hacia atrás** |
 | `docs/ERRORS_AND_LEARNINGS.md` | Una entrada por error real, con **el mecanismo** — no solo el síntoma |
 | `docs/EVALUATION.md` | Qué se midió, cómo, y con qué resultado |
+| `docs/GIT_STRATEGY.md` | Estrategia de ramas, commits, pull requests, releases y convención de idioma |
 | `CLAUDE.md` | Reglas de proceso que el Ejecutor lee al empezar. **Corto**, o deja de leerse |
+| `docs/METHODOLOGY.md` | Dueño de la metodología de trabajo. Ante contradicción con `CLAUDE.md`, **este manda** |
 
 ### Reglas duras
 

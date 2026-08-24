@@ -29,9 +29,22 @@ La métrica principal de decisión del proyecto es **PR-AUC** (área bajo la cur
 precisión-recall).
 
 Se reportan además, como **métricas de contexto obligatorias**: ROC-AUC, KS, Gini,
-Brier score y precision@k.
+Brier score, **precision@top-10%** (principal) y **precision@top-5%** (secundaria).
 
 **Toda métrica se reporta junto a su baseline.**
+
+### Por qué precision@top-10% y no precision@k
+
+Las dos métricas de precisión en el tope se expresan como **porcentaje de la población
+puntuada**, no como un `k` absoluto.
+
+Un `k` fijo **no transfiere entre tamaños de muestra** y no representa nada de negocio:
+"los 500 peores" significa algo distinto sobre 5.000 clientes que sobre 50.000. Un
+porcentaje sí representa algo concreto, la **capacidad de revisión del equipo**: cuántos
+casos alcanza a mirar sobre el total que llega.
+
+Además, el **decil superior es el estándar del dominio** y conecta con el análisis de
+lift por deciles que ya viene implicado por reportar KS y Gini.
 
 ### Por qué se reportan KS y Gini
 

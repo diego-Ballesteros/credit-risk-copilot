@@ -1,7 +1,7 @@
 [project]
 name = "credit-risk-copilot"
 version = "0.1.0"
-description = "Scoring de riesgo crediticio (probabilidad de default) con copiloto agentico sobre el modelo."
+description = "Credit risk scoring (probability of default) with an agentic copilot on top of the model."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
@@ -48,7 +48,7 @@ select = [
     "D",    # pydocstyle
     "C4",   # flake8-comprehensions
     "SIM",  # flake8-simplify
-    "PTH",  # flake8-use-pathlib: rutas con pathlib, nunca strings
+    "PTH",  # flake8-use-pathlib: paths via pathlib, never strings
     "RET",  # flake8-return
     "ARG",  # flake8-unused-arguments
 ]

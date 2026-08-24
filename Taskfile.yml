@@ -1,32 +1,32 @@
-# Task es una conveniencia, no una dependencia del proyecto: cada tarea envuelve
-# un comando `uv run` que se puede ejecutar a mano con identico resultado.
+# Task is a convenience, not a project dependency: every task wraps a `uv run`
+# command that can be executed by hand with an identical result.
 version: '3'
 
 tasks:
   setup:
-    desc: Sincroniza el entorno con UV e instala los hooks de pre-commit.
+    desc: Sync the environment with UV and install the pre-commit hooks.
     cmds:
       - uv sync --dev
       - uv run pre-commit install
 
   lint:
-    desc: Ruff en modo lint y verificacion de formato.
+    desc: Run ruff in lint mode and check formatting.
     cmds:
       - uv run ruff check .
       - uv run ruff format --check .
 
   typecheck:
-    desc: Analisis estatico de tipos con mypy sobre src/.
+    desc: Static type analysis with mypy over src/.
     cmds:
       - uv run mypy src/
 
   test:
-    desc: Suite de tests con cobertura.
+    desc: Test suite with coverage.
     cmds:
       - uv run pytest -v
 
   check:
-    desc: Lint, tipos y tests en secuencia. Equivale a lo que corre la CI.
+    desc: Lint, types and tests in sequence. Mirrors what CI runs.
     cmds:
       - task: lint
       - task: typecheck

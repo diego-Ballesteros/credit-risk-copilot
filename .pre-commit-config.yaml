@@ -1,5 +1,5 @@
-# Revisiones fijadas a las mismas versiones que resuelve `uv sync`, para que el
-# hook y la CI no discrepen sobre el mismo archivo.
+# Revisions pinned to the same versions `uv sync` resolves, so the hook and CI
+# never disagree about the same file.
 default_language_version:
   python: python3.11
 
@@ -11,8 +11,8 @@ repos:
       - id: end-of-file-fixer
       - id: check-yaml
       - id: check-added-large-files
-        # data/ esta gitignoreado, pero un artefacto de modelo o un parquet
-        # guardado fuera de esa carpeta entraria al historial sin que nadie lo note.
+        # data/ is gitignored, but a model artifact or a parquet file saved outside
+        # that folder would enter the history without anyone noticing.
         args: [--maxkb=1024]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit

@@ -1,9 +1,9 @@
-"""Configuracion central del proyecto: rutas canonicas y variables de entorno.
+"""Central project configuration: canonical paths and environment variables.
 
-Este modulo es la unica fuente de verdad para rutas y credenciales. La raiz del
-proyecto se deriva de la ubicacion de este archivo y no del directorio de trabajo,
-de modo que ejecutar un script desde cualquier carpeta resuelve siempre el mismo
-`.env` y los mismos directorios de datos.
+This module is the single source of truth for paths and credentials. The project
+root is derived from the location of this file rather than from the working
+directory, so running a script from any folder always resolves the same `.env`
+file and the same data directories.
 """
 
 from pathlib import Path
@@ -12,32 +12,31 @@ from typing import Final
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 RANDOM_STATE: Final[int] = 42
-"""Semilla unica del proyecto.
+"""Single random seed for the whole project.
 
-Todo componente que introduzca aleatoriedad (splits, muestreos, entrenamiento)
-la toma de aqui. Nunca se hardcodea un valor equivalente en otro modulo: la
-reproducibilidad exacta de las metricas por parte de un tercero depende de que
-exista un solo punto de control.
+Every component that introduces randomness (splits, sampling, training) reads it
+from here. An equivalent value is never hardcoded elsewhere: exact reproduction of
+the reported metrics by a third party depends on there being a single control point.
 """
 
 _MODULE_DIR: Final[Path] = Path(__file__).resolve().parent
 PROJECT_ROOT: Final[Path] = _MODULE_DIR.parents[1]
-"""Raiz del repositorio: `src/credit_copilot/config.py` -> `src/` -> raiz."""
+"""Repository root: `src/credit_copilot/config.py` -> `src/` -> root."""
 
 
 class Settings(BaseSettings):
-    """Configuracion del proyecto: rutas derivadas y secretos leidos del `.env`.
+    """Project configuration: derived paths and secrets read from the `.env` file.
 
-    Los campos de credenciales son opcionales de forma deliberada. Importar el
-    paquete no debe fallar en un entorno sin secretos (por ejemplo la CI, que
-    ejecuta los tests sin `.env`); la ausencia de una credencial se valida en el
-    punto de uso, no en el import.
+    The credential fields are deliberately optional. Importing the package must not
+    fail in an environment without secrets (for example CI, which runs the tests
+    without an `.env` file); a missing credential is validated at its point of use,
+    not at import time.
 
     Attributes:
-        anthropic_api_key: Clave de la API de Anthropic para el copiloto agentico.
-        mlflow_tracking_uri: URI del servidor de tracking de MLflow.
-        mlflow_tracking_username: Usuario del servidor de MLflow, si aplica.
-        mlflow_tracking_password: Password del servidor de MLflow, si aplica.
+        anthropic_api_key: Anthropic API key used by the agentic copilot.
+        mlflow_tracking_uri: URI of the MLflow tracking server.
+        mlflow_tracking_username: MLflow server username, when required.
+        mlflow_tracking_password: MLflow server password, when required.
     """
 
     model_config = SettingsConfigDict(
@@ -54,68 +53,68 @@ class Settings(BaseSettings):
 
     @property
     def random_state(self) -> int:
-        """Semilla global del proyecto.
+        """Global random seed for the project.
 
         Returns:
-            El valor de `RANDOM_STATE`, expuesto como propiedad de solo lectura
-            para que no pueda sobrescribirse desde el entorno.
+            The value of `RANDOM_STATE`, exposed as a read-only property so it
+            cannot be overridden from the environment.
         """
         return RANDOM_STATE
 
     @property
     def project_root(self) -> Path:
-        """Raiz del repositorio.
+        """Repository root.
 
         Returns:
-            Ruta absoluta a la raiz del proyecto.
+            Absolute path to the project root.
         """
         return PROJECT_ROOT
 
     @property
     def data_dir(self) -> Path:
-        """Directorio raiz de datos.
+        """Root data directory.
 
         Returns:
-            Ruta absoluta a `data/`.
+            Absolute path to `data/`.
         """
         return PROJECT_ROOT / "data"
 
     @property
     def raw_data_dir(self) -> Path:
-        """Directorio de datos crudos, tal como se descargan de la fuente.
+        """Directory for raw data, exactly as downloaded from the source.
 
         Returns:
-            Ruta absoluta a `data/raw/`.
+            Absolute path to `data/raw/`.
         """
         return self.data_dir / "raw"
 
     @property
     def processed_data_dir(self) -> Path:
-        """Directorio de datos procesados, listos para entrenamiento.
+        """Directory for processed data, ready for training.
 
         Returns:
-            Ruta absoluta a `data/processed/`.
+            Absolute path to `data/processed/`.
         """
         return self.data_dir / "processed"
 
     @property
     def corpus_dir(self) -> Path:
-        """Directorio del corpus documental que alimenta el RAG.
+        """Directory for the document corpus that feeds the RAG pipeline.
 
         Returns:
-            Ruta absoluta a `data/corpus/`.
+            Absolute path to `data/corpus/`.
         """
         return self.data_dir / "corpus"
 
     @property
     def docs_dir(self) -> Path:
-        """Directorio de documentacion del proyecto.
+        """Project documentation directory.
 
         Returns:
-            Ruta absoluta a `docs/`.
+            Absolute path to `docs/`.
         """
         return PROJECT_ROOT / "docs"
 
 
 settings = Settings()
-"""Instancia unica de configuracion. Se importa desde aqui; no se reinstancia."""
+"""Single configuration instance. Import it from here; do not re-instantiate."""

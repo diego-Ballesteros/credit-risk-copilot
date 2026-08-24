@@ -1,4 +1,4 @@
-"""Paquete `credit_copilot`: scoring de riesgo crediticio y copiloto agentico."""
+"""The `credit_copilot` package: credit risk scoring and agentic copilot."""
 
 from credit_copilot.config import RANDOM_STATE, Settings, settings
 
