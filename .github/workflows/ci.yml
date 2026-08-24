@@ -1,0 +1,42 @@
+name: CI
+
+# Se dispara en los dos eventos a proposito: `push` da senal inmediata al empujar
+# una rama, y `pull_request` es el que produce el check contra el commit de merge
+# de la PR, que es el unico que GitHub puede exigir como required check en una
+# rama protegida.
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+    branches: [main, development]
+
+jobs:
+  quality:
+    name: Lint, tipos y tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar UV
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.11"
+
+      - name: Sincronizar entorno
+        run: uv sync --dev
+
+      - name: Ruff (lint)
+        run: uv run ruff check .
+
+      - name: Ruff (formato)
+        run: uv run ruff format --check .
+
+      - name: Mypy
+        run: uv run mypy src/
+
+      - name: Pytest
+        run: uv run pytest -v

@@ -1,0 +1,32 @@
+# Revisiones fijadas a las mismas versiones que resuelve `uv sync`, para que el
+# hook y la CI no discrepen sobre el mismo archivo.
+default_language_version:
+  python: python3.11
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        # data/ esta gitignoreado, pero un artefacto de modelo o un parquet
+        # guardado fuera de esa carpeta entraria al historial sin que nadie lo note.
+        args: [--maxkb=1024]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.4
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.3.1
+    hooks:
+      - id: mypy
+        files: ^src/
+        additional_dependencies:
+          - pydantic
+          - pydantic-settings

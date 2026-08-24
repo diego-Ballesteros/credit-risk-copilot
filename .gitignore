@@ -1,0 +1,62 @@
+# --- Entornos virtuales -----------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+
+# --- Cachés y artefactos de Python -----------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Cachés de herramientas -------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# --- Credenciales -----------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- Experimentos -----------------------------------------------------------
+mlruns/
+mlartifacts/
+
+# --- Datos: se ignora todo el contenido salvo los .gitkeep ------------------
+data/**
+!data/**/
+!data/**/.gitkeep
+
+# --- Notebooks --------------------------------------------------------------
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# --- IDE / editores ---------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Sistema operativo ------------------------------------------------------
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
