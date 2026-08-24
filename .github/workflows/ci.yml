@@ -1,0 +1,45 @@
+name: CI
+
+# Both events on purpose. `push` gives immediate feedback when a branch is pushed.
+# `pull_request` produces the check against the PR merge commit, which is the only
+# one GitHub can enforce as a required check on a protected branch.
+#
+# `pull_request` carries no branch filter deliberately: a filter that names a branch
+# discards the event in silence when the name does not match, and a check that never
+# runs looks identical to a check that passed. Without a filter, no branch name can
+# silence CI. See docs/ERRORS_AND_LEARNINGS.md.
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+
+jobs:
+  quality:
+    name: Lint, types and tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install UV
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.11"
+
+      - name: Sync environment
+        run: uv sync --dev
+
+      - name: Ruff (lint)
+        run: uv run ruff check .
+
+      - name: Ruff (format)
+        run: uv run ruff format --check .
+
+      - name: Mypy
+        run: uv run mypy src/
+
+      - name: Pytest
+        run: uv run pytest -v
