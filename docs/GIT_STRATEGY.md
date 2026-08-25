@@ -18,18 +18,26 @@ Tres tipos de rama, ni una más:
 
 | Rama | Vida | Rol |
 | --- | --- | --- |
-| `main` | Permanente | Rama de release. Protegida. Solo recibe merges vía PR desde `development`. Cada commit en `main` es un estado entregable y etiquetado. |
-| `development` | Permanente | Rama de integración. Recibe las features terminadas. Es la base desde la que se abre cualquier rama nueva. |
-| `feature/NN-nombre-corto` | Efímera | Una unidad de trabajo. Nace de `development` y muere al mergearse en `development`. |
+| `main` | Permanente | Rama de release. Protegida. Solo recibe merges vía PR desde `develop`. Cada commit en `main` es un estado entregable y etiquetado. |
+| `develop` | Permanente | Rama de integración. Recibe las features terminadas. Es la base desde la que se abre cualquier rama nueva. |
+| `feature/NN-nombre-corto` | Efímera | Una unidad de trabajo. Nace de `develop` y muere al mergearse en `develop`. |
+
+> **Nota sobre el nombre.** La rama de integración se llama **`develop`**, siguiendo la
+> convención de git-flow, que es el nombre estándar en la industria. El enunciado del
+> entregable la menciona como rama **«Development»**: son la misma rama. Se optó por
+> conservar el nombre convencional y documentar aquí la equivalencia, en vez de renombrar
+> la rama para que coincidiera literalmente con el enunciado. Esta nota existe para que un
+> lector externo — un evaluador, o cualquiera que llegue al repo sin contexto — no tenga
+> que inferir la correspondencia por su cuenta.
 
 ### Reglas duras
 
 - Nunca se commitea directo a `main`. Está protegida a nivel de GitHub.
-- Nunca se commitea directo a `development`. Todo entra por PR.
-- Una rama `feature/` nace siempre de `development` actualizado, no de `main` ni de
+- Nunca se commitea directo a `develop`. Todo entra por PR.
+- Una rama `feature/` nace siempre de `develop` actualizado, no de `main` ni de
   otra feature.
 - Una rama `feature/` se borra tras el merge. El historial ya guarda la traza.
-- Si `development` avanza mientras trabajas, actualiza tu rama con `merge`, no con
+- Si `develop` avanza mientras trabajas, actualiza tu rama con `merge`, no con
   `rebase`: reescribir commits ya empujados destruye la evidencia del proceso.
 
 ### Convención de nombres de rama
@@ -39,14 +47,20 @@ Tres tipos de rama, ni una más:
 - `NN`: número de fase con dos dígitos (`00`, `01`, ...), en el orden del roadmap.
 - `nombre-corto`: dos o tres palabras en kebab-case, minúsculas, sin acentos.
 
-Ejemplos válidos:
+Los nombres canónicos son los de las fases del roadmap. No son ejemplos ilustrativos:
+son las ramas que el proyecto va a usar, y están fijadas en `docs/ROADMAP.md`.
 
     feature/00-fundacion
-    feature/01-eda
-    feature/02-baseline
-    feature/03-modelo-lightgbm
-    feature/04-explicabilidad-shap
-    feature/05-copiloto-langgraph
+    feature/01-data-and-eda
+    feature/02-modeling
+    feature/03-genai
+    feature/04-production
+    feature/05-closing
+
+> **Excepción histórica.** `feature/00-fundacion` conserva su nombre en español.
+> Renombrarla exigiría reescribir el historial, y no lo vale. **De la fase 1 en adelante
+> todos los nombres de rama van en inglés**, según la convención de idioma de la
+> sección 6.
 
 El prefijo numérico hace que `git branch` y el listado de PRs salgan en el orden
 cronológico del proyecto, que es exactamente el orden en que se evalúa.
@@ -59,9 +73,9 @@ cronológico del proyecto, que es exactamente el orden en que se evalúa.
                                                        |              |
     main         o------------------------------------ o ------------ o
                   \                                   /              /
-                   \                    PR: development -> main     /
+                   \                    PR: develop -> main         /
                     \                             /                /
-    development      o------o------o------o------o---------------o
+    develop          o------o------o------o------o---------------o
                       \    / \    / \    / \    /                /
                        \  /   \  /   \  /   \  /                /
     feature/            oo     oo     oo     oo             o--o
@@ -71,10 +85,10 @@ cronológico del proyecto, que es exactamente el orden en que se evalúa.
 
 Lectura del diagrama:
 
-1. Cada `feature/NN-*` sale de `development` y vuelve a `development` por PR.
-2. `development` acumula features integradas y verdes en CI.
-3. Cuando `development` alcanza un estado entregable, se abre una PR
-   `development -> main`.
+1. Cada `feature/NN-*` sale de `develop` y vuelve a `develop` por PR.
+2. `develop` acumula features integradas y verdes en CI.
+3. Cuando `develop` alcanza un estado entregable, se abre una PR
+   `develop -> main`.
 4. El merge en `main` se etiqueta con una versión semántica.
 
 ---
@@ -172,7 +186,7 @@ Los releases se cortan sobre `main` con **versionado semántico**
 
 Procedimiento:
 
-    # Con la PR development -> main ya mergeada y la CI en verde
+    # Con la PR develop -> main ya mergeada y la CI en verde
     git checkout main
     git pull origin main
 
@@ -199,7 +213,7 @@ entregable la leen el autor del proyecto y un evaluador hispanohablante.
 | Docstrings | Inglés | Toda función, clase y módulo |
 | Comentarios en código | Inglés | Incluidos los de archivos de configuración |
 | Nombres de archivos y carpetas | Inglés | `docs/METHODOLOGY.md`, `docs/DATA_DICTIONARY.md`, `src/credit_copilot/` |
-| Nombres de ramas | Inglés | `main`, `development`, `feature/NN-nombre-corto` |
+| Nombres de ramas | Inglés | `main`, `develop`, `feature/NN-nombre-corto` |
 | Mensajes de commit | Inglés | Tipo, ámbito, descripción, cuerpo y footers |
 | `CLAUDE.md` | Español | Reglas de proceso para el Ejecutor |
 | `docs/METHODOLOGY.md` | Español | Metodología de trabajo |

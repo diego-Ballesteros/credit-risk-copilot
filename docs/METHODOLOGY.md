@@ -188,6 +188,22 @@ contenido en dos lados diverge, porque nadie actualiza dos veces.
   columnas de los datasets se conservan **como los entrega la fuente**; lo que va en español es su
   descripción.
 
+### Estándares de código
+
+- **Type hints en toda función.** Docstrings en toda función pública.
+- **`pathlib.Path` para toda ruta.** Nunca strings concatenados.
+- **`random_state` se toma de `config.py`.** Nunca se hardcodea, porque la reproducibilidad exacta
+  desde cero es un requisito **verificado y no supuesto**: un tercero clona el repo, corre los
+  scripts en orden y las métricas coinciden.
+- **Credenciales solo desde `.env`.** Nunca en el código.
+
+Estas cuatro reglas ya están forzadas por las herramientas — `ruff` con las reglas `D` y `PTH`, y
+`mypy` con `disallow_untyped_defs` — y aun así se escriben aquí. La razón es de arquitectura de
+documentos, no de redundancia: **`CLAUDE.md` es un puntero y no puede ser la fuente de una regla**,
+y una regla sin documento dueño no se puede citar ni discutir. Una configuración impide, pero no
+explica; cuando alguien pregunte *por qué* no puede concatenar rutas, la respuesta tiene que estar
+en algún lado.
+
 ---
 
 ## 5. Protocolo de auto-documentación

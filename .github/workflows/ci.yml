@@ -10,7 +10,7 @@ name: CI
 # silence CI. See docs/ERRORS_AND_LEARNINGS.md.
 on:
   push:
-    branches: [main, development]
+    branches: [main, develop]
   pull_request:
 
 jobs:
