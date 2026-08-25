@@ -22,7 +22,7 @@ implementación: la lógica vive en `src/` y el notebook la importa.
 se declara explícitamente — un `NaN` convertido en `0` deja de ser "no sé" y pasa a ser
 un hecho de negocio falso. Una categoría desconocida **falla ruidosamente**.
 
-**Git.** `main` está protegida y solo recibe merges vía PR desde `development`. Ramas
+**Git.** `main` está protegida y solo recibe merges vía PR desde `develop`. Ramas
 `feature/NN-nombre-corto`. Conventional Commits. Merge commit, **no squash**.
 
 **Documentos.** Cero números de línea (`loader.py:42` prohibido; nombrar el módulo está

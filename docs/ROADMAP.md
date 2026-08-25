@@ -445,20 +445,27 @@ credit-risk-copilot/
 
 ## 9. Estrategia de Git
 
-**Modelo:** GitHub Flow adaptado con rama `development` persistente (la rúbrica exige main + development).
+**Modelo:** GitHub Flow adaptado con rama `develop` persistente, siguiendo la convención de git-flow (la rúbrica exige main + «Development»: es esta misma rama).
 
 ```
 main ──────●───────────────────────────●─────► v1.0.0
             \                         /
-development  ●──●──●──●──●──●──●──●──●
+develop      ●──●──●──●──●──●──●──●──●
               \  /    \  /    \  /
         feature/*  feature/*  feature/*
 ```
 
 **Reglas:**
-- `main` protegida; solo recibe merges desde `development` vía PR
-- Una rama por fase del roadmap: `feature/01-fundacion`, `feature/02-eda`, ...
+- `main` protegida; solo recibe merges desde `develop` vía PR
+- Una rama por fase del roadmap, numerada desde `00` para que coincida con las fases de la
+  sección 10: `feature/00-fundacion`, `feature/01-data-and-eda`, `feature/02-modeling`,
+  `feature/03-genai`, `feature/04-production`, `feature/05-closing`
 - Commits con Conventional Commits: `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`
+
+> **Excepción histórica.** `feature/00-fundacion` conserva su nombre en español. Renombrarla
+> exigiría reescribir el historial, y no lo vale. **De la fase 1 en adelante todos los nombres
+> de rama van en inglés**, según la convención de idioma de `docs/GIT_STRATEGY.md`.
+
 - Todo PR con descripción de cambios, checklist y evidencia (métrica o screenshot)
 - Merge commits, no squash — la rúbrica pide evidencia de PRs cerradas exitosamente
 - Tag `v1.0.0` al final, con release notes redactadas
@@ -471,7 +478,7 @@ development  ●──●──●──●──●──●──●──●�
 
 > **Supuesto:** ~3-4 horas diarias, ~50 horas totales. Ajustar según disponibilidad real.
 >
-> **Convención:** cada fase termina con una rama mergeada a `development` vía PR.
+> **Convención:** cada fase termina con una rama mergeada a `develop` vía PR.
 
 ---
 
@@ -481,7 +488,7 @@ development  ●──●──●──●──●──●──●──●�
 
 #### Día 1 — Andamiaje
 
-- [ ] Crear repo en GitHub, ramas `main` y `development`, protección de `main`
+- [ ] Crear repo en GitHub, ramas `main` y `develop`, protección de `main`
 - [ ] Estructura de carpetas completa con `.gitkeep` en las provisionales
 - [ ] `pyproject.toml` + `uv sync`
 - [ ] `.gitignore` (datos, `.env`, `.venv`, `__pycache__`, `mlruns/`)
@@ -503,7 +510,7 @@ development  ●──●──●──●──●──●──●──●�
 - [ ] Cuenta de DagsHub creada y conectada al repo
 
 > ✅ **Hito 0:** repo profesional funcionando, CI en verde, datos versionados y documentados.
-> 🔀 **PR #1:** `feature/00-fundacion` → `development`
+> 🔀 **PR #1:** `feature/00-fundacion` → `develop`
 
 ---
 
@@ -535,7 +542,7 @@ development  ●──●──●──●──●──●──●──●�
 **Concepto clave:** por qué el preprocesamiento va **dentro** del pipeline y no antes del split. Escribirlo en el notebook.
 
 > ✅ **Hito 1:** dataset procesado, reproducible con un comando.
-> 🔀 **PR #2:** `feature/01-datos-eda` → `development`
+> 🔀 **PR #2:** `feature/01-data-and-eda` → `develop`
 
 ---
 
@@ -572,7 +579,7 @@ development  ●──●──●──●──●──●──●──●�
 - [ ] `docs/MODEL_CARD.md` — primera versión completa
 
 > ✅ **Hito 2:** modelo productivo registrado, calibrado y explicable.
-> 🔀 **PR #3:** `feature/02-modelado` → `development`
+> 🔀 **PR #3:** `feature/02-modeling` → `develop`
 
 ---
 
@@ -617,7 +624,7 @@ development  ●──●──●──●──●──●──●──●�
 - [ ] Medir tokens y costo por consulta
 
 > ✅ **Hito 3:** agente funcional y **medido**, no solo funcionando.
-> 🔀 **PR #4:** `feature/03-genai` → `development`
+> 🔀 **PR #4:** `feature/03-genai` → `develop`
 
 ---
 
@@ -643,7 +650,7 @@ development  ●──●──●──●──●──●──●──●�
 - [ ] *(Opcional, si sobra tiempo)* Terraform + Azure Container Apps → **Reto ML 2**
 
 > ✅ **Hito 4:** sistema desplegable, medido en condiciones de producción simulada.
-> 🔀 **PR #5:** `feature/04-produccion` → `development`
+> 🔀 **PR #5:** `feature/04-production` → `develop`
 
 ---
 
@@ -669,12 +676,14 @@ development  ●──●──●──●──●──●──●──●�
 - [ ] CI en verde
 - [ ] Revisión final: ningún secreto en el repo, ningún dato pesado
 - [ ] Verificar que el link público de MLflow/DagsHub funciona
-- [ ] PR final `development` → `main`
+- [ ] PR de cierre `feature/05-closing` → `develop`
+- [ ] PR de release `develop` → `main`
 - [ ] **Tag `v1.0.0` con release notes redactadas**
 - [ ] **Congelar: ningún commit posterior**
 
 > ✅ **Hito 5 — Proyecto entregado.**
-> 🔀 **PR #6:** `development` → `main` + release
+> 🔀 **PR #6:** `feature/05-closing` → `develop` — documentación, Model Card y cobertura de tests
+> 🔀 **PR #7:** `develop` → `main` — release, precede al tag `v1.0.0`
 
 ---
 
@@ -693,7 +702,7 @@ development  ●──●──●──●──●──●──●──●�
 | MLflow con métricas/params/artefactos | 50% | DagsHub, todas las fases | 2-4 |
 | Modelo productivo | 50% | Model Registry, etapa Production | 2 |
 | Commits, PRs, releases | 15% | Sección 9 | Todas |
-| Ramas main + development | 15% | Sección 9 | 0 |
+| Ramas Main + Development | 15% | Sección 9 | 0 |
 | Documentación de estrategia git | 15% | `docs/GIT_STRATEGY.md` | 0 |
 | README con 6 secciones | 10% | Fase 5 | 5 |
 | Model Card | 10% | `docs/MODEL_CARD.md` | 2, 5 |
