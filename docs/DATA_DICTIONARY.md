@@ -14,11 +14,13 @@ coinciden, la diferencia está en la sección
 | **Fuente** | UCI Machine Learning Repository, dataset ID 350 |
 | **URL** | https://archive.ics.uci.edu/dataset/350/default+of+credit+card+clients |
 | **Registros** | 30.000 |
-| **Columnas** | 25 (identificador + 23 predictoras + target) |
+| **Columnas del archivo crudo** | 25 (identificador + 23 predictoras + target) |
+| **Columnas de la tabla de trabajo** | **24** — `ID` se elimina en la carga ([ADR-0004](adr/0004-codigos-no-documentados-de-pay-status.md) §6) |
 | **Tamaño del CSV crudo** | 2,76 MiB |
 | **Target** | `DEFAULT_PAYMENT_NEXT_MONTH` — 6.636 positivos, 22,12% |
-| **Valores nulos** | 0 en las 25 columnas (medido, no supuesto) |
-| **Filas duplicadas exactas** | 0 |
+| **Valores nulos** | 0 en las 25 columnas del archivo crudo (medido, no supuesto) |
+| **Filas duplicadas exactas** | 0 sobre el archivo crudo, `ID` incluido |
+| **Filas idénticas salvo por `ID`** | 35 — informativas, no bloqueantes |
 | **Período cubierto** | abril a septiembre de 2005 |
 | **Moneda** | dólar taiwanés (NT$) |
 | **Fecha de medición** | 2026-08-25 |
@@ -29,6 +31,11 @@ coinciden, la diferencia está en la sección
 > que tiene **25 filas**. No es una corrección al ADR: los ADRs no se reescriben, y la
 > cifra de 23 predictoras que el ADR usa para justificar la elección del dataset sigue
 > siendo exacta.
+>
+> Desde el [ADR-0004](adr/0004-codigos-no-documentados-de-pay-status.md) §6 la aritmética
+> cierra por los dos lados: el **archivo** tiene 25 columnas y la **tabla de trabajo** que
+> devuelve `load_dataset` tiene **24**, porque `ID` se elimina en la carga. La tabla de
+> abajo describe el archivo, así que sigue teniendo 25 filas y marca `ID` como eliminada.
 
 ---
 
@@ -76,7 +83,7 @@ dataset usa ese vocabulario:
 
 | Nombre canónico | Nombre original | Tipo | Descripción | Valores según la documentación oficial | Rango observado |
 | --- | --- | --- | --- | --- | --- |
-| `ID` | `ID` | `int64` | Identificador de fila asignado por la fuente. No es una variable predictora y no debe entrar nunca al modelo. | **No documentada.** La fuente describe 23 variables explicativas y el target; no menciona esta columna. | 1 … 30.000, únicos y contiguos |
+| `ID` | `ID` | `int64` | Identificador de fila asignado por la fuente. **`load_dataset` la elimina**, así que no está en la tabla que el proyecto consume; `load_raw_dataframe` sí la devuelve. Ver [ADR-0004](adr/0004-codigos-no-documentados-de-pay-status.md) §6. | **No documentada.** La fuente describe 23 variables explicativas y el target; no menciona esta columna. | 1 … 30.000, únicos y contiguos |
 | `LIMIT_BAL` | `LIMIT_BAL` | `int64` | Monto del crédito otorgado en NT$. Incluye el crédito individual y el familiar (suplementario). | Entero en NT$. Sin rango declarado. | 10.000 … 1.000.000 |
 | `SEX` | `SEX` | `int64` | Género del titular. | 1 = hombre; 2 = mujer | {1, 2} |
 | `EDUCATION` | `EDUCATION` | `int64` | Nivel educativo del titular. | 1 = posgrado; 2 = universidad; 3 = secundaria; 4 = otros | {0, 1, 2, 3, 4, 5, 6} ⚠️ |
@@ -111,41 +118,70 @@ dataset usa ese vocabulario:
 Todas las frecuencias de esta sección están **medidas** sobre las 30.000 filas del archivo
 descargado, no estimadas.
 
-**Esta sección describe. No propone.** Qué hacer con estos códigos es una decisión que se
-discute y se registra en un ADR; no se resuelve dentro de una función ni en este
-documento.
+**Esta sección describe lo que hay y registra lo que se decidió.** Las mediciones que
+sostienen cada decisión están en
+[`docs/analysis/undocumented-codes-evidence.md`](analysis/undocumented-codes-evidence.md)
+y son reproducibles con `uv run python scripts/analyze_undocumented_codes.py`. El
+razonamiento y las alternativas descartadas están en el
+[**ADR-0004**](adr/0004-codigos-no-documentados-de-pay-status.md). Este documento no
+justifica: apunta.
 
 ### 1 · Valores presentes en los datos que la fuente no documenta
 
-| Columna | Código | Filas | % del total |
-| --- | --- | --- | --- |
-| `EDUCATION` | `0` | 14 | 0,05% |
-| `EDUCATION` | `5` | 280 | 0,93% |
-| `EDUCATION` | `6` | 51 | 0,17% |
-| | **subtotal** | **345** | **1,15%** |
-| `MARRIAGE` | `0` | 54 | 0,18% |
-| | **subtotal** | **54** | **0,18%** |
-| `PAY_STATUS_1` | `-2` | 2.759 | 9,20% |
-| `PAY_STATUS_1` | `0` | 14.737 | 49,12% |
-| | **subtotal** | **17.496** | **58,32%** |
-| `PAY_STATUS_2` | `-2` | 3.782 | 12,61% |
-| `PAY_STATUS_2` | `0` | 15.730 | 52,43% |
-| | **subtotal** | **19.512** | **65,04%** |
-| `PAY_STATUS_3` | `-2` | 4.085 | 13,62% |
-| `PAY_STATUS_3` | `0` | 15.764 | 52,55% |
-| | **subtotal** | **19.849** | **66,16%** |
-| `PAY_STATUS_4` | `-2` | 4.348 | 14,49% |
-| `PAY_STATUS_4` | `0` | 16.455 | 54,85% |
-| | **subtotal** | **20.803** | **69,34%** |
-| `PAY_STATUS_5` | `-2` | 4.546 | 15,15% |
-| `PAY_STATUS_5` | `0` | 16.947 | 56,49% |
-| | **subtotal** | **21.493** | **71,64%** |
-| `PAY_STATUS_6` | `-2` | 4.895 | 16,32% |
-| `PAY_STATUS_6` | `0` | 16.286 | 54,29% |
-| | **subtotal** | **21.181** | **70,60%** |
+Todos los códigos de esta tabla están **aceptados** por el ADR-0004. Ninguno se agregó a
+la lista de niveles declarados por la fuente: viven en un mapa aparte, `OBSERVED_CODES_ACCEPTED`
+del módulo `schema`, y el validador los reporta como **informativos**, nunca como
+bloqueantes. La separación existe para que el día que UCI publique documentación se pueda
+seguir distinguiendo *lo que la fuente declara* de *lo que este proyecto aceptó midiendo*.
+
+| Columna | Código | Filas | % del total | Significado aceptado | Tratamiento | Decisión |
+| --- | --- | ---: | ---: | --- | --- | --- |
+| `EDUCATION` | `0` | 14 | 0,05% | Código de educación no documentado | Se colapsa al nivel `4` ("otros") | ADR-0004 §4 |
+| `EDUCATION` | `5` | 280 | 0,93% | Ídem | Se colapsa al nivel `4` | ADR-0004 §4 |
+| `EDUCATION` | `6` | 51 | 0,17% | Ídem | Se colapsa al nivel `4` | ADR-0004 §4 |
+| | **subtotal** | **345** | **1,15%** | Default agrupado **7,54%** contra **5,69%** del nivel `4` | | |
+| `MARRIAGE` | `0` | 54 | 0,18% | Código de estado civil no documentado | **Se conserva como nivel propio.** No se colapsa | ADR-0004 §5 |
+| | **subtotal** | **54** | **0,18%** | Default **9,26%** contra **26,01%** del nivel `3` ("otros") | | |
+| `PAY_STATUS_1` | `-2` | 2.759 | 9,20% | Sin consumo en el mes | Nivel propio en one-hot | ADR-0004 §1 |
+| `PAY_STATUS_1` | `0` | 14.737 | 49,12% | Crédito revolvente | Nivel propio en one-hot | ADR-0004 §1 |
+| | **subtotal** | **17.496** | **58,32%** | | | |
+| `PAY_STATUS_2` | `-2` | 3.782 | 12,61% | Sin consumo en el mes | Nivel propio en one-hot | ADR-0004 §1 |
+| `PAY_STATUS_2` | `0` | 15.730 | 52,43% | Crédito revolvente | Nivel propio en one-hot | ADR-0004 §1 |
+| | **subtotal** | **19.512** | **65,04%** | | | |
+| `PAY_STATUS_3` | `-2` | 4.085 | 13,62% | Sin consumo en el mes | Nivel propio en one-hot | ADR-0004 §1 |
+| `PAY_STATUS_3` | `0` | 15.764 | 52,55% | Crédito revolvente | Nivel propio en one-hot | ADR-0004 §1 |
+| | **subtotal** | **19.849** | **66,16%** | | | |
+| `PAY_STATUS_4` | `-2` | 4.348 | 14,49% | Sin consumo en el mes | Nivel propio en one-hot | ADR-0004 §1 |
+| `PAY_STATUS_4` | `0` | 16.455 | 54,85% | Crédito revolvente | Nivel propio en one-hot | ADR-0004 §1 |
+| | **subtotal** | **20.803** | **69,34%** | | | |
+| `PAY_STATUS_5` | `-2` | 4.546 | 15,15% | Sin consumo en el mes | Nivel propio en one-hot | ADR-0004 §1 |
+| `PAY_STATUS_5` | `0` | 16.947 | 56,49% | Crédito revolvente | Nivel propio en one-hot | ADR-0004 §1 |
+| | **subtotal** | **21.493** | **71,64%** | | | |
+| `PAY_STATUS_6` | `-2` | 4.895 | 16,32% | Sin consumo en el mes | Nivel propio en one-hot | ADR-0004 §1 |
+| `PAY_STATUS_6` | `0` | 16.286 | 54,29% | Crédito revolvente | Nivel propio en one-hot | ADR-0004 §1 |
+| | **subtotal** | **21.181** | **70,60%** | | | |
 
 **Alcance conjunto:** 25.970 de las 30.000 filas — el **86,57%** del dataset — tienen al
 menos un código no documentado en alguna de estas columnas.
+
+> **La lectura de `-2` y `0` es una inferencia, no un hecho de la fuente.** La evidencia
+> que la sostiene es la mediana del ratio de cobertura de pago: **1,000** para `-1` y `-2`
+> en los cinco meses calculables, contra **0,042 a 0,057** para el código `0`. Si UCI
+> llegara a publicar documentación que la contradiga, el ADR-0004 se marca `superseded` y
+> las features derivadas se revisan.
+
+### 1.b · Consecuencias sobre el tratamiento de `PAY_STATUS_*`
+
+Dos restricciones que el ADR-0004 fija y que el paso de features no puede ignorar:
+
+- **Estas seis columnas son categóricas, no ordinales.** El orden numérico no es orden de
+  severidad: en el mes 1 el código `0` tiene **12,81%** de default, *menor* que el `-1`
+  (16,78%) y que el `-2` (13,23%). Van a **one-hot**, nunca a escalado numérico.
+- **El mes 1 no comparte escala con los meses 2 a 6 en la zona baja.** Las features de
+  trayectoria se construyen sobre `PAY_STATUS_2..6` y el mes 1 se trata como variable
+  aparte. El contrato lo declara en `PAY_STATUS_HOMOGENEOUS_COLUMNS` y
+  `PAY_STATUS_ISOLATED_COLUMN` para que un bucle sobre las seis columnas tenga que
+  escribirse a propósito.
 
 `SEX` y el target son las únicas columnas categóricas cuyos valores coinciden exactamente
 con lo que la fuente declara.
@@ -176,6 +212,21 @@ ninguna en los dos meses restantes.
 identificador de fila, único y contiguo de 1 a 30.000 — está **inferido de la medición**,
 no transcrito de la fuente.
 
+**`ID` ya no forma parte del DataFrame de trabajo.** `loader.load_dataset` la elimina; el
+CSV crudo la conserva intacta y `loader.load_raw_dataframe` sigue devolviéndola, así que
+la trazabilidad hacia la fuente no se pierde. La razón está en el
+[ADR-0004](adr/0004-codigos-no-documentados-de-pay-status.md) §6 y es de jerarquía de
+garantías: mientras la regla *"no debe usarse como feature"* vivía solo en este documento
+era una garantía de nivel 3 según la sección 6.5 de `docs/METHODOLOGY.md`, y el nivel 3
+falla. Una columna que no existe no se puede usar.
+
+Consecuencia medida sobre el chequeo de duplicados: sin `ID` en la tabla, la detección de
+**duplicados exactos** —el chequeo que distingue una extracción rota de dos clientes
+iguales— **no se puede correr**, porque su condición es que un identificador se repita. El
+validador lo reporta como omitido en vez de dejarlo pasar en silencio, y las 35 filas
+idénticas siguen siendo un hallazgo **informativo**, exactamente como cuando `ID` estaba
+presente. Para correr el chequeo bloqueante hay que validar sobre `load_raw_dataframe`.
+
 ---
 
 ## Rangos plausibles y su criterio
@@ -204,10 +255,10 @@ El criterio no es cuán alarmante se ve el hallazgo, sino **quién puede absorbe
 
 | Severidad | Criterio | Chequeos |
 | --- | --- | --- |
-| **Bloqueante** | Seguir adelante exige una decisión que ningún valor por defecto puede tomar bien. | Columna faltante · columna sobrante · tipo distinto al esperado · valores nulos · categoría no documentada · valor fuera de rango · fila duplicada exacta |
-| **Informativo** | Un hecho medido que conviene conocer y que no invalida el contrato. | Filas que difieren solo en `ID` · chequeo de rango omitido por tipo no numérico |
+| **Bloqueante** | Seguir adelante exige una decisión que ningún valor por defecto puede tomar bien. | Columna faltante · columna sobrante · tipo distinto al esperado · valores nulos · **categoría que ni la fuente declara ni un ADR acepta** · valor fuera de rango · fila duplicada exacta |
+| **Informativo** | Un hecho medido que conviene conocer y que no invalida el contrato. | **Código no documentado aceptado por un ADR** · filas que difieren solo en `ID` · chequeo de rango omitido por tipo no numérico · **chequeo de duplicados exactos omitido por ausencia de `ID`** |
 
-Dos elecciones que no son obvias:
+Tres elecciones que no son obvias:
 
 - **Una columna sobrante es bloqueante.** No rompe ningún cálculo, pero una columna que el
   contrato no conoce tiene exactamente la forma de un vector de fuga de información, y la
@@ -216,10 +267,17 @@ Dos elecciones que no son obvias:
   atributos idénticos son esperables en una muestra de 30.000 filas comparada sobre las 24
   variables restantes, en su mayoría gruesas. Se miden 35 casos. El número igual se reporta, porque acota cuánta
   información realmente independiente hay.
+- **Un código aceptado por un ADR es informativo, no silencioso.** El ADR-0004 le quitó el
+  carácter bloqueante al hallazgo, no el hallazgo. La lectura de esos códigos es una
+  inferencia sobre evidencia propia, no un hecho documentado por la fuente, y quien lea la
+  salida de una corrida tiene derecho a verlo declarado cada vez en lugar de tener que
+  saber que en algún momento se decidió algo.
 
-Estado actual del dataset: **8 hallazgos bloqueantes** (categorías no documentadas en
-`EDUCATION`, `MARRIAGE` y las seis columnas `PAY_STATUS_*`) y **1 informativo**. Ninguno
-es un fallo del código: son las mediciones que este documento registra.
+Estado actual del dataset: **0 hallazgos bloqueantes** y **10 informativos** — ocho
+códigos aceptados por el ADR-0004 (`EDUCATION`, `MARRIAGE` y las seis columnas
+`PAY_STATUS_*`), las 35 filas idénticas salvo por `ID`, y el chequeo de duplicados exactos
+omitido por ausencia de `ID`. `uv run python scripts/download_dataset.py` sale con
+**código 0**.
 
 ---
 

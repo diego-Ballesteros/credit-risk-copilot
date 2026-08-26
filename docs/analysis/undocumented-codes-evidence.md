@@ -1,5 +1,16 @@
 # Evidencia sobre los códigos no documentados
 
+> **Estado al 2026-08-25, posterior a esta medición.** Las decisiones que estas
+> mediciones habilitaron están tomadas y registradas en el
+> [**ADR-0004**](../adr/0004-codigos-no-documentados-de-pay-status.md). Los ocho hallazgos
+> bloqueantes que el texto de abajo describe **ya no son bloqueantes**: el validador los
+> reporta como informativos citando ese ADR, y `scripts/download_dataset.py` sale con
+> código 0.
+>
+> **El cuerpo de este documento no se reescribe.** Es el registro de una medición con
+> fecha, y era exacto el día que se hizo; corregirlo hacia atrás borraría el estado sobre
+> el que se decidió. Las cifras siguen siendo reproducibles corriendo el script.
+
 El validador de datos reporta ocho hallazgos bloqueantes de tipo `unknown_category`: el
 bloque `PAY_STATUS_1..6`, `EDUCATION` y `MARRIAGE` contienen códigos que la documentación
 oficial de UCI nunca declara. Este documento **mide** esos códigos. No decide qué
@@ -25,7 +36,7 @@ validador.
 | | |
 | --- | --- |
 | **Filas** | 30.000 |
-| **Columnas** | 25 |
+| **Columnas** | 24 — eran 25 al hacer esta medición; `ID` se elimina en la carga desde el [ADR-0004](../adr/0004-codigos-no-documentados-de-pay-status.md) §6. Ninguna medición de este documento usaba esa columna, y las 284 filas de tabla siguen siendo idénticas |
 | **Target** | `DEFAULT_PAYMENT_NEXT_MONTH` — 6.636 positivos, **22,12%** |
 | **Fecha de medición** | 2026-08-25 |
 

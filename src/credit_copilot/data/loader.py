@@ -5,14 +5,16 @@ Two responsibilities, kept apart on purpose:
 - `download_raw_dataset` talks to UCI and writes `data/raw/`. It is idempotent: an
   existing file is left alone unless forcing is explicit, so the exploratory work of the
   next turns neither depends on the network nor hammers the source server.
-- `load_dataset` reads that file and applies the canonical renaming. Every consumer in
-  the project - notebook, training script, API - goes through it. Reading the CSV
-  directly anywhere else would fork the naming contract in two, and the two copies would
-  drift.
+- `load_dataset` reads that file, applies the canonical renaming and removes the columns
+  `schema.DROPPED_ON_LOAD` names - `ID` and nothing else. Every consumer in the project -
+  notebook, training script, API - goes through it. Reading the CSV directly anywhere
+  else would fork the naming contract in two, and the two copies would drift.
 
 Neither function cleans, imputes or corrects anything. What arrives is what the source
-sent, renamed and nothing else; judging it is the validator's job and deciding what to do
-about it is the human's.
+sent, renamed and with the identifier removed; no value is changed, filled or clipped.
+Judging the content is the validator's job and deciding what to do about it is the
+human's. The one column that does disappear is the one that must never be a feature, and
+it disappears by decision recorded in ADR-0004, not by convenience.
 """
 
 import shutil
@@ -174,18 +176,32 @@ def load_raw_dataframe(path: Path | None = None) -> pd.DataFrame:
 def load_dataset(path: Path | None = None) -> pd.DataFrame:
     """Load the dataset with canonical column names. The project's single entry point.
 
-    Renaming is the only transformation applied. A column the contract does not know is
-    passed through under its original name instead of raising: aborting here would hide
-    every other problem in the file behind the first one, and the validator is built to
-    report the whole picture in one run.
+    Two transformations are applied and no others: the columns are renamed, and the
+    columns listed in `schema.DROPPED_ON_LOAD` are removed.
+
+    **Why the drop happens here.** `ID` must never become a feature. Until ADR-0004 that
+    rule lived only in the data dictionary, which is the weakest guarantee the project
+    recognises - section 6.5 of the methodology calls it level 3, "written in a document",
+    and level 3 fails. Removing the column at the single door into the data turns "must
+    not be used" into "cannot be used": there is no way to reach it from a table that does
+    not contain it. `load_raw_dataframe` still returns the file whole, so nothing about
+    the source becomes unreachable.
+
+    A column the contract does not know is passed through under its original name instead
+    of raising: aborting here would hide every other problem in the file behind the first
+    one, and the validator is built to report the whole picture in one run. A column
+    listed in `DROPPED_ON_LOAD` that is absent from the file is likewise not an error
+    here; the validator reports the shape it finds.
 
     Args:
         path: Raw CSV to read. Defaults to `raw_dataset_path()`.
 
     Returns:
-        The table with canonical column names, in the order the file stores them.
+        The table with canonical column names and the dropped columns removed, in the
+        order the file stores the rest.
 
     Raises:
         RawDataUnavailableError: If the file is not on disk.
     """
-    return load_raw_dataframe(path).rename(columns=dict(schema.RAW_TO_CANONICAL))
+    frame = load_raw_dataframe(path).rename(columns=dict(schema.RAW_TO_CANONICAL))
+    return frame.drop(columns=[c for c in schema.DROPPED_ON_LOAD if c in frame.columns])

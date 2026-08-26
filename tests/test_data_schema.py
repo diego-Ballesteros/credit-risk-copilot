@@ -88,14 +88,72 @@ def test_undocumented_codes_are_absent_from_categorical_levels() -> None:
     """The levels map states what UCI documents, never what the data happens to contain.
 
     0 in EDUCATION and MARRIAGE and 0 and -2 in the repayment-status block are real values
-    in the file and undocumented at the source. Adding them here would silence the
-    validator instead of answering the question.
+    in the file and undocumented at the source. ADR-0004 accepted them, and it accepted
+    them in `OBSERVED_CODES_ACCEPTED`. Moving them here would make the validator pass for
+    the wrong reason and erase the difference between what the source claims and what this
+    project decided.
     """
     assert 0 not in schema.CATEGORICAL_LEVELS["EDUCATION"]
     assert 0 not in schema.CATEGORICAL_LEVELS["MARRIAGE"]
     for column in schema.PAY_STATUS_COLUMNS:
         assert 0 not in schema.CATEGORICAL_LEVELS[column]
         assert -2 not in schema.CATEGORICAL_LEVELS[column]
+
+
+def test_the_two_category_maps_never_overlap() -> None:
+    """No code is both "declared by the source" and "accepted by us"; that split is the point."""
+    for column, accepted in schema.OBSERVED_CODES_ACCEPTED.items():
+        declared = schema.CATEGORICAL_LEVELS[column]
+        overlap = sorted(set(accepted) & set(declared))
+        assert not overlap, f"{column}: codes in both maps: {overlap}"
+
+
+def test_every_accepted_code_names_the_decision_that_accepted_it() -> None:
+    """An accepted code with no ADR behind it is a silent edit to the contract."""
+    for column, accepted in schema.OBSERVED_CODES_ACCEPTED.items():
+        assert column in schema.CATEGORICAL_LEVELS, f"{column} is not a categorical column"
+        for code, record in accepted.items():
+            assert record.adr == schema.ADR_UNDOCUMENTED_CODES, f"{column}[{code}]"
+            assert len(record.meaning.strip()) > 40, f"{column}[{code}] has no real reading"
+
+
+def test_education_collapses_onto_a_documented_level_and_marriage_does_not() -> None:
+    """The two columns are resolved differently because the measurement differed.
+
+    ADR-0004 collapses EDUCATION 0, 5 and 6 onto documented level 4, and deliberately
+    leaves MARRIAGE 0 alone. The absence of a MARRIAGE map is the decision, so it is
+    asserted rather than left to be noticed.
+    """
+    assert set(schema.EDUCATION_COLLAPSE_MAP) == set(schema.OBSERVED_CODES_ACCEPTED["EDUCATION"])
+    for target in schema.EDUCATION_COLLAPSE_MAP.values():
+        assert target in schema.CATEGORICAL_LEVELS["EDUCATION"]
+
+    assert not hasattr(schema, "MARRIAGE_COLLAPSE_MAP")
+    assert 0 in schema.OBSERVED_CODES_ACCEPTED["MARRIAGE"]
+
+
+def test_the_repayment_block_is_split_into_homogeneous_months_and_month_one() -> None:
+    """Trajectory features get months 2 to 6; month 1 is a variable of its own.
+
+    ADR-0004 measured that month 1 does not share the low-end scale of the rest. The split
+    lives in the contract so the feature step cannot assume homogeneity by looping over
+    the whole block out of habit.
+    """
+    expected_homogeneous = tuple(f"PAY_STATUS_{month}" for month in range(2, 7))
+    assert schema.PAY_STATUS_ISOLATED_COLUMN == "PAY_STATUS_1"
+    assert expected_homogeneous == schema.PAY_STATUS_HOMOGENEOUS_COLUMNS
+
+    rebuilt = (schema.PAY_STATUS_ISOLATED_COLUMN, *schema.PAY_STATUS_HOMOGENEOUS_COLUMNS)
+    assert rebuilt == schema.PAY_STATUS_COLUMNS
+
+
+def test_working_columns_are_the_canonical_ones_minus_the_dropped_identifier() -> None:
+    """The file has 25 columns and the table the project works with has 24."""
+    assert schema.DROPPED_ON_LOAD == (schema.ID_COLUMN,)
+    assert len(schema.WORKING_COLUMNS) == 24
+    assert schema.ID_COLUMN not in schema.WORKING_COLUMNS
+    assert schema.TARGET_COLUMN in schema.WORKING_COLUMNS
+    assert set(schema.CANONICAL_COLUMNS) - set(schema.WORKING_COLUMNS) == {schema.ID_COLUMN}
 
 
 def test_bill_amount_ranges_admit_negative_values() -> None:
@@ -129,6 +187,12 @@ def test_contract_maps_are_read_only() -> None:
         schema.EXPECTED_DTYPES,
         schema.CATEGORICAL_LEVELS,
         schema.NUMERIC_RANGES,
+        schema.OBSERVED_CODES_ACCEPTED,
+        schema.EDUCATION_COLLAPSE_MAP,
     ):
         with pytest.raises(TypeError):
             mapping["INJECTED"] = "anything"  # type: ignore[index]
+
+    for accepted in schema.OBSERVED_CODES_ACCEPTED.values():
+        with pytest.raises(TypeError):
+            accepted[999] = "anything"  # type: ignore[index]

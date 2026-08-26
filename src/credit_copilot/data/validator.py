@@ -19,13 +19,17 @@ one means.
   column cannot be computed around. A column the contract does not know has the exact
   shape of a leakage vector. A wrong dtype breaks every arithmetic downstream. A null in a
   source documented as having none demands an imputation policy, and a silent one turns
-  "unknown" into a false business fact. An undocumented category is a code that means
-  something nobody has written down. A value outside a plausible range is a unit error or
-  a corrupt row. None of these can be settled by a library default.
+  "unknown" into a false business fact. A category that appears in **neither** the levels
+  the source declares nor the codes an ADR accepts is a value nobody has looked at yet. A
+  value outside a plausible range is a unit error or a corrupt row. None of these can be
+  settled by a library default.
 - `INFORMATIVE`: a measured fact worth knowing that does not invalidate the contract. Two
   clients with identical attributes and different identifiers are unremarkable in a
   30,000-row extract; the number is still reported, because it matters for deduplication
-  decisions later.
+  decisions later. An undocumented code that an ADR accepted is reported here too: the
+  decision removed the blocker, not the fact, and the reading behind it is an inference
+  that a future reader has a right to see restated on every run. A check that could not
+  run at all is reported here as well, because a silent check reads as a passing one.
 
 `validate_dataframe` never raises on findings. `validate_or_raise` wraps it for callers
 that must stop. Both return the same complete result.
@@ -195,6 +199,14 @@ def _sorted_counts(counts: Mapping[object, int]) -> Mapping[str, int]:
 def _check_columns(frame: pd.DataFrame) -> list[ValidationIssue]:
     """Compare the set of columns against the canonical contract.
 
+    Two different sets do two different jobs. A column is **required** when
+    `schema.WORKING_COLUMNS` lists it: that is the table `loader.load_dataset` produces
+    and everything downstream consumes. A column is **allowed** when
+    `schema.CANONICAL_COLUMNS` lists it, which is the wider set the raw file carries. The
+    gap between them is `schema.DROPPED_ON_LOAD`, so the same validator can be pointed at
+    the raw-renamed table or at the working table and be right about both, instead of
+    reporting the identifier as missing from one and unexpected in the other.
+
     Args:
         frame: Table with canonical column names.
 
@@ -202,9 +214,8 @@ def _check_columns(frame: pd.DataFrame) -> list[ValidationIssue]:
         One issue for missing columns and one for unexpected columns, when either exists.
     """
     present = list(frame.columns)
-    expected = list(schema.CANONICAL_COLUMNS)
-    missing = [column for column in expected if column not in present]
-    unexpected = [column for column in present if column not in expected]
+    missing = [column for column in schema.WORKING_COLUMNS if column not in present]
+    unexpected = [column for column in present if column not in schema.CANONICAL_COLUMNS]
 
     issues: list[ValidationIssue] = []
     if missing:
@@ -290,39 +301,82 @@ def _check_nulls(frame: pd.DataFrame) -> tuple[Mapping[str, int], list[Validatio
 
 
 def _check_categories(frame: pd.DataFrame) -> list[ValidationIssue]:
-    """Find values absent from the levels the official documentation declares.
+    """Compare each categorical column against both value contracts.
+
+    Two maps are consulted, and the order matters. `schema.CATEGORICAL_LEVELS` says what
+    the source declares. `schema.OBSERVED_CODES_ACCEPTED` says what this project accepted
+    afterwards, on its own measurements, with an ADR behind each entry. A value in neither
+    is a code nobody has looked at, and that is what stays blocking.
+
+    The accepted codes are still reported. Silence would be cheaper and wrong: these are
+    the majority of the dataset in the repayment-status block, the reading behind them is
+    an inference and not a documented fact, and a run that mentions them keeps that
+    visible to whoever reads the output next.
 
     Args:
         frame: Table with canonical column names.
 
     Returns:
-        One issue per categorical column holding at least one undocumented value, with
-        the frequency of each such value.
+        One blocking issue per column holding a value in neither map, and one informative
+        issue per column holding an accepted code, each with its frequencies.
     """
     issues: list[ValidationIssue] = []
     for column, declared in schema.CATEGORICAL_LEVELS.items():
         if column not in frame.columns:
             continue
+        accepted = schema.OBSERVED_CODES_ACCEPTED.get(column, {})
         observed = frame[column].value_counts(dropna=True)
-        unknown = {value: count for value, count in observed.items() if value not in declared}
-        if not unknown:
-            continue
-        affected = sum(unknown.values())
-        issues.append(
-            ValidationIssue(
-                check="unknown_category",
-                severity=Severity.BLOCKING,
-                column=column,
-                message=(
-                    f"{len(unknown)} value(s) appear in the data that the official UCI "
-                    f"documentation does not declare, across {affected:,} rows "
-                    f"({affected / len(frame):.2%}). Documented levels: "
-                    f"{sorted(declared)}. These codes mean something nobody has written "
-                    "down; what to do with them is a decision, not a default."
-                ),
-                counts=_sorted_counts(unknown),
+        undeclared = {value: count for value, count in observed.items() if value not in declared}
+
+        unknown = {value: count for value, count in undeclared.items() if value not in accepted}
+        if unknown:
+            affected = sum(unknown.values())
+            issues.append(
+                ValidationIssue(
+                    check="unknown_category",
+                    severity=Severity.BLOCKING,
+                    column=column,
+                    message=(
+                        f"{len(unknown)} value(s) appear in the data that neither the "
+                        "official UCI documentation declares nor any ADR accepts, across "
+                        f"{affected:,} rows ({affected / len(frame):.2%}). Documented "
+                        f"levels: {sorted(declared)}. Accepted codes: "
+                        f"{sorted(accepted)}. These codes mean something nobody has "
+                        "written down; what to do with them is a decision, not a default."
+                    ),
+                    counts=_sorted_counts(unknown),
+                )
             )
-        )
+
+        known = {value: count for value, count in undeclared.items() if value in accepted}
+        if known:
+            affected = sum(known.values())
+            # Codes that share a reading are listed against it once. Three EDUCATION codes
+            # were accepted by one measurement, and printing that measurement three times
+            # buries the finding it belongs to.
+            grouped: dict[str, list[int]] = {}
+            for code in sorted(known, key=int):
+                grouped.setdefault(accepted[code].meaning, []).append(int(code))
+            readings = " ".join(
+                f"[{', '.join(str(code) for code in codes)}] {meaning}"
+                for meaning, codes in grouped.items()
+            )
+            adrs = sorted({accepted[code].adr for code in known})
+            issues.append(
+                ValidationIssue(
+                    check="accepted_undocumented_category",
+                    severity=Severity.INFORMATIVE,
+                    column=column,
+                    message=(
+                        f"{len(known)} value(s) the official UCI documentation does not "
+                        f"declare, across {affected:,} rows ({affected / len(frame):.2%}), "
+                        f"accepted by {', '.join(adrs)} on measured evidence. Not blocking, "
+                        "and not silent either: the reading is an inference, so if the "
+                        f"source ever documents these codes the ADR is revisited. {readings}"
+                    ),
+                    counts=_sorted_counts(known),
+                )
+            )
     return issues
 
 
@@ -388,15 +442,46 @@ def _check_duplicates(frame: pd.DataFrame) -> list[ValidationIssue]:
     the identifier is two distinct clients with the same attributes, which a 30,000-row
     sample of the 24 remaining, mostly coarse, variables produces on its own.
 
+    **The blocking half of this check needs the identifier.** Since ADR-0004 the loader
+    drops `ID`, so the working table cannot support it: with no identifier present, every
+    repeated row is by construction "identical on every column except the identifier",
+    which is the case this validator has always called informative. Keeping it blocking
+    would not be strictness, it would be a different claim than the evidence supports -
+    the 35 such rows in the real dataset were informative when `ID` was there and nothing
+    about them changed when the column left. The unavailable check is reported as skipped
+    rather than passed over, for the same reason the range check reports its own skips: a
+    check that stays quiet reads as a check that succeeded.
+
     Args:
         frame: Table with canonical column names.
 
     Returns:
         A blocking issue for exact duplicates and an informative one for duplicates that
-        differ only by identifier, when either exists.
+        differ only by identifier, when either exists; and, when the identifier is absent,
+        an informative issue recording that the blocking half could not run.
     """
     issues: list[ValidationIssue] = []
-    exact = int(frame.duplicated(keep="first").sum())
+    has_identifier = schema.ID_COLUMN in frame.columns
+
+    if not has_identifier:
+        issues.append(
+            ValidationIssue(
+                check="exact_duplicate_check_skipped",
+                severity=Severity.INFORMATIVE,
+                column=None,
+                message=(
+                    f"Exact-duplicate detection not run: {schema.ID_COLUMN} is not in this "
+                    "table, and without an identifier a broken extract cannot be told "
+                    "apart from two distinct clients with identical attributes. The "
+                    f"loader drops {schema.ID_COLUMN} by decision "
+                    f"({schema.ADR_UNDOCUMENTED_CODES}), so this is the expected state of "
+                    "the working table, not a fault. Run the check on "
+                    "`loader.load_raw_dataframe`, which still carries the column."
+                ),
+            )
+        )
+
+    exact = int(frame.duplicated(keep="first").sum()) if has_identifier else 0
     if exact:
         issues.append(
             ValidationIssue(
@@ -412,25 +497,32 @@ def _check_duplicates(frame: pd.DataFrame) -> list[ValidationIssue]:
             )
         )
 
-    if schema.ID_COLUMN in frame.columns and len(frame.columns) > 1:
-        without_id = int(frame.drop(columns=[schema.ID_COLUMN]).duplicated(keep="first").sum())
-        if without_id:
-            issues.append(
-                ValidationIssue(
-                    check="duplicate_rows_ignoring_id",
-                    severity=Severity.INFORMATIVE,
-                    column=None,
-                    message=(
-                        f"{without_id:,} row(s) match an earlier row on every column "
-                        f"except {schema.ID_COLUMN}; {exact:,} of those are exact "
-                        "duplicates reported separately as blocking. Not blocking on its "
-                        "own: distinct clients with identical attributes are expected at "
-                        "this sample size. Reported because it bounds how much of the "
-                        "data is genuinely independent."
-                    ),
-                    counts=MappingProxyType({"extra_copies": without_id}),
-                )
+    # A degenerate frame - no rows, or no columns left after dropping the identifier -
+    # needs no guard: pandas reports zero duplicates for both, and a table that shape has
+    # already produced a blocking `missing_columns` finding upstream.
+    comparable = frame.drop(columns=[schema.ID_COLUMN]) if has_identifier else frame
+    without_id = int(comparable.duplicated(keep="first").sum())
+    if without_id:
+        provenance = (
+            f"{exact:,} of those are exact duplicates reported separately as blocking"
+            if has_identifier
+            else f"{schema.ID_COLUMN} is not in this table, so every column present was compared"
+        )
+        issues.append(
+            ValidationIssue(
+                check="duplicate_rows_ignoring_id",
+                severity=Severity.INFORMATIVE,
+                column=None,
+                message=(
+                    f"{without_id:,} row(s) match an earlier row on every column "
+                    f"except {schema.ID_COLUMN}; {provenance}. Not blocking on its "
+                    "own: distinct clients with identical attributes are expected at "
+                    "this sample size. Reported because it bounds how much of the "
+                    "data is genuinely independent."
+                ),
+                counts=MappingProxyType({"extra_copies": without_id}),
             )
+        )
     return issues
 
 
