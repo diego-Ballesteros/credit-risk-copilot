@@ -8,7 +8,7 @@
 ## Contexto
 
 Las features de comportamiento de pago son las que ponen a prueba la hipótesis principal
-del proyecto. Cuatro decisiones de diseño tuvieron alternativas reales y ninguna es
+del proyecto. Cinco decisiones de diseño tuvieron alternativas reales y ninguna es
 evidente desde el código.
 
 ---
@@ -113,6 +113,22 @@ modelos no los aceptan. Esa decisión corresponde al turno del pipeline y no a e
 
 ### Riesgo
 
-El piso de **100 NT\$** es un umbral **elegido con criterio y no derivado de los datos**.
-Si un análisis posterior mostrara que descarta comportamiento relevante, se revisa mediante
-un ADR que **supersede** a este.
+El piso de **100 NT\$** es un umbral **elegido con criterio y no derivado de los datos**, y
+la medición muestra que **se queda corto respecto de su propio objetivo**, no que se pase.
+
+El piso quita el caso extremo y **no quita la cola**. Medido sobre las 30.000 filas: el
+máximo de `PAYMENT_RATIO_M4` **no se mueve de 129,71**, porque su denominador es de 780
+NT\$ y supera el umbral; el de `PAYMENT_RATIO_M5` sigue en 447,74 sobre un denominador de
+291 NT\$. Un denominador puede superar los 100 NT\$ y seguir siendo lo bastante chico como
+para que el ratio mida el tamaño del resumen y no la disciplina del cliente. El p99 apenas
+baja: de 1,3491 a 1,3235 en el mes 2.
+
+**La acotación de la cola no se resuelve subiendo el piso: se resuelve en el pipeline.** El
+piso es una regla de *calculabilidad* —por debajo de él el cociente no significa nada— y la
+cola es un problema de *escala*, que se trata con un recorte por percentil aprendido en
+`fit` sobre los datos de entrenamiento. Esa decisión pertenece al ADR del turno del
+pipeline, no a este.
+
+Si un análisis posterior mostrara que el piso descarta comportamiento relevante —la
+evidencia disponible apunta en dirección contraria: agrega entre 0,21% y 0,28% de filas no
+calculables por mes— se revisa mediante un ADR que **supersede** a este.

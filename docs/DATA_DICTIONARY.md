@@ -365,8 +365,10 @@ Tres elecciones que no son obvias:
 - **El faltante es `NaN`, nunca `0`.** Cero es una medición —"no pagó nada"— y esto es la
   ausencia de una. Convertirlo en 0 es exactamente el modo de falla de la sección 7.1 de
   `docs/METHODOLOGY.md`: un "no sé" que pasa a ser un hecho de negocio falso. **Este módulo
-  no imputa nada**; qué hacer con esos `NaN` es una decisión del paso siguiente del
-  pipeline y debe quedar declarada cuando se tome.
+  no imputa nada**; qué hacer con esos `NaN` lo decide el paso siguiente, y **ya está
+  decidido y declarado**: el pipeline los imputa con la mediana aprendida en `fit` y
+  conserva la columna indicadora al lado, de modo que la ausencia sigue siendo una feature.
+  Está en la sección [La matriz procesada](#la-matriz-procesada).
 
 Alcance medido de la política, y cuánto de ese alcance lo agrega el piso:
 
@@ -454,6 +456,116 @@ roadmap:
   dentro de la feature sería una imputación silenciosa.
 - `IS_DELINQUENT_MOST_RECENT_M1` existe porque el ADR-0004 §3 aísla el mes 1: el roadmap
   no lo previó porque fue escrito antes de esa medición.
+
+---
+
+## La matriz procesada
+
+Las features derivadas de arriba **no son todavía la matriz que un modelo consume**. Entre
+las 24 columnas canónicas y esa matriz hay un único objeto `Pipeline` de sklearn, que
+devuelve `data.preprocessor.build_preprocessor()` y que el notebook, el script de
+entrenamiento y la API cargan **como el mismo artefacto**. La razón está en la sección 6.3
+de `docs/METHODOLOGY.md`: dos implementaciones de la misma aritmética divergen, y la
+divergencia no da síntoma hasta producción.
+
+**Fecha de medición:** 2026-08-25, sobre las 30.000 filas del archivo descargado.
+
+### Qué recibe cada grupo
+
+El pipeline tiene cuatro pasos. Los tres primeros trabajan sobre el DataFrame completo; el
+cuarto es un `ColumnTransformer` con tres ramas y `remainder="drop"`.
+
+| Paso | Qué hace | ¿Aprende algo en `fit`? |
+| --- | --- | --- |
+| `behaviour` | Adjunta las 22 features de comportamiento a las columnas de origen, delegando en `PaymentBehaviourFeatures` | No |
+| `education` | Colapsa `EDUCATION` 0, 5 y 6 sobre el nivel 4, por [ADR-0004](adr/0004-codigos-no-documentados-de-pay-status.md) §4. **`MARRIAGE` no se colapsa**, por §5 del mismo ADR | No |
+| `clip` | Recorta los cuatro ratios de pago en el percentil **99,5**, un tope por columna | **Sí** — los cuatro topes |
+| `columns` | Las tres ramas de abajo | **Sí** — vocabulario one-hot, medianas, mediana e IQR |
+
+| Rama | Columnas de entrada | Transformación | Columnas de salida |
+| --- | ---: | --- | ---: |
+| **Categórica** | 9 | `OneHotEncoder(handle_unknown="ignore")`, sin nivel de referencia descartado | **74** |
+| **Numérica** | 30 | `SimpleImputer(median)` → `RobustScaler()` | **30** |
+| **Indicadores** | 6 | `passthrough` — ya son 0/1 | **6** |
+| | **45** | | **110** |
+
+Las tres ramas **parten exactamente** el conjunto de columnas: los 23 predictores de origen
+se reparten 9 categóricos y 14 numéricos, y las 22 features derivadas 16 numéricas y 6
+indicadoras. Ninguna columna queda sin destino, así que `remainder="drop"` no descarta nada
+salvo el target. Un test lo verifica; si mañana se agrega una columna al contrato y a
+ninguna rama, ese test se pone rojo en vez de que la columna desaparezca en silencio.
+
+### Las decisiones de la matriz
+
+- **Los seis `PAY_STATUS_*` van a one-hot y nunca a un escalador.** Es la consecuencia que
+  el [ADR-0004](adr/0004-codigos-no-documentados-de-pay-status.md) §2 llama "directa y no
+  negociable": su orden numérico no es un orden de severidad.
+- **Una categoría ausente del fold no rompe nada.** `handle_unknown="ignore"` la codifica
+  como todo ceros. **No es laxitud, es una necesidad medida:** con
+  `StratifiedKFold(5, shuffle=True, random_state=42)` sobre este archivo, dos de los cinco
+  folds contienen un nivel de `PAY_STATUS` que su propia parte de entrenamiento nunca vio
+  —`PAY_STATUS_5 = 8` y `PAY_STATUS_2 = 8`, una fila cada uno—. Con `handle_unknown="error"`
+  la validación cruzada del propio proyecto se caería sobre datos legítimos. **El fallo
+  ruidoso ante una categoría desconocida sigue existiendo y vive en `data.validator`**, en
+  la puerta de entrada; duplicarlo acá pondría la misma garantía en dos componentes que
+  pueden discrepar.
+- **No se descarta un nivel de referencia.** `drop="first"` elimina una colinealidad que
+  solo sufre un modelo lineal sin regularizar, y cuesta que el nivel descartado deje de
+  tener columna: SHAP no tendría a qué atribuir su contribución.
+- **Los faltantes se imputan con la mediana aprendida en `fit`, sin agregar indicador.** El
+  [ADR-0005](adr/0005-diseno-de-features-de-comportamiento.md) ya deja cada faltante con su
+  columna indicadora al lado, y esa correspondencia se verificó **exacta**: en las doce
+  columnas que pueden faltar, `valor.isna()` coincide fila por fila con `indicador == 1`,
+  sin una sola excepción. La imputación no destruye información porque la ausencia ya es
+  una feature de primera clase; `add_indicator=True` emitiría un duplicado perfectamente
+  colineal.
+- **El escalador es `RobustScaler`, elegido midiendo.** Sobre las 29 columnas numéricas con
+  rango intercuartílico no degenerado, el ancho del 50% central queda entre **0,181 y
+  1,963** con `StandardScaler` —una disparidad de **10,86×**— y en **1,000 exacto** para
+  las 29 con `RobustScaler`. Once de las treinta columnas tienen asimetría mayor a 5 y doce
+  curtosis mayor a 50, así que su desviación estándar es un estadístico de sus outliers.
+  El costo declarado: el valor extremo llega a 403,7 en vez de 72,8, ambos en `PAY_AMT2`.
+- **`DELINQUENCY_STREAK_M2_M6` no se escala de hecho.** El 85,21% de sus filas vale 0, así
+  que su rango intercuartílico es cero y sklearn cae a un divisor de 1. La columna queda en
+  su escala cruda de 0 a 5. No es un error y no está oculto: es la única de las 30 donde el
+  escalado no hace nada.
+- **`UTILIZATION_NOT_COMPUTABLE` es la única columna constante de la matriz**, en 0. Se
+  conserva por la [decisión 5 del ADR-0005](adr/0005-diseno-de-features-de-comportamiento.md).
+
+### La expansión del one-hot
+
+74 columnas desde 9. Nivel por nivel, sobre el archivo completo:
+
+| Columna | Niveles | Cuáles |
+| --- | ---: | --- |
+| `SEX` | 2 | 1, 2 |
+| `EDUCATION` (colapsada) | 4 | 1, 2, 3, 4 |
+| `MARRIAGE` | 4 | 0, 1, 2, 3 |
+| `PAY_STATUS_1` … `PAY_STATUS_4` | 11 cada una | -2 … 8 |
+| `PAY_STATUS_5`, `PAY_STATUS_6` | 10 cada una | -2 … 8 **sin el código 1** |
+
+Que a los meses 5 y 6 les falte el código `1` no es un accidente del muestreo: es la
+decisión 3 del ADR-0004 reapareciendo: el código `1` aparece 3.688 veces en el mes 1 y 28,
+4, 2, 0 y 0 veces en los meses 2 a 6.
+
+### Dónde viven los artefactos
+
+`scripts/run_preprocessing.py` escribe tres archivos en `data/processed/`, que está
+gitignoreado — se regeneran con un comando:
+
+| Archivo | Qué es |
+| --- | --- |
+| `features.parquet` | La matriz de 30.000 × 110. **Sin el target.** |
+| `target.parquet` | El target, en archivo aparte, por la misma razón por la que `ID` se elimina en la carga: una columna que no debe ser feature está más segura fuera de la tabla que el código de features lee |
+| `preprocessor.joblib` | El pipeline **ajustado**. Es el artefacto que comparten notebook, entrenamiento y API |
+
+> ⚠️ **`features.parquet` se ajusta sobre el dataset completo y por eso NO sirve para
+> evaluar un modelo.** Los cuatro estadísticos que el pipeline aprende se calcularon con
+> todas las filas a la vista, esta fila incluida. Es correcto para explorar y es *leakage*
+> en el momento en que esa matriz se usa para estimar desempeño fuera de muestra. Para
+> entrenar se usa el **pipeline**, metido dentro de la validación cruzada como paso, de
+> modo que su `fit` corra una vez por fold sobre la parte de entrenamiento de ese fold. La
+> advertencia está también en el docstring del script.
 
 ---
 

@@ -11,6 +11,21 @@
 > fecha, y era exacto el día que se hizo; corregirlo hacia atrás borraría el estado sobre
 > el que se decidió. Las cifras siguen siendo reproducibles corriendo el script.
 
+> **Segunda nota de estado, 2026-08-25 · la regla de denominador cambió después.** Las
+> medianas del **ratio de cobertura** que este documento reporta se calcularon con la regla
+> `denominador > 0`, que era la vigente al medir. El
+> [**ADR-0005**](../adr/0005-diseno-de-features-de-comportamiento.md) puso después un
+> **piso de 100 NT$** bajo todo denominador, y el pipeline recorta además la cola de los
+> ratios en el percentil 99,5. **Las cifras de acá no coinciden exactamente con las
+> features que produce el pipeline**, y no tienen por qué: miden columnas crudas para
+> decidir el significado de un código, no las features derivadas.
+>
+> El cuerpo tampoco se reescribe por esto, y `scripts/analyze_undocumented_codes.py`
+> conserva la regla `> 0` a propósito: es lo que hace que las cifras citadas en el ADR-0004
+> sigan siendo reproducibles. Cambiar el script rompería esa reproducibilidad para ganar
+> una coincidencia que no aporta nada, porque la decisión que este documento habilitó no
+> depende del piso — la separación entre 1,000 y 0,042–0,057 es de dos órdenes de magnitud.
+
 El validador de datos reporta ocho hallazgos bloqueantes de tipo `unknown_category`: el
 bloque `PAY_STATUS_1..6`, `EDUCATION` y `MARRIAGE` contienen códigos que la documentación
 oficial de UCI nunca declara. Este documento **mide** esos códigos. No decide qué
