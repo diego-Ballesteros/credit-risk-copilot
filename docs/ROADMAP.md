@@ -209,12 +209,23 @@ Estas no vienen en el dataset — las creamos nosotros, y son el corazón de la 
 | Feature | Definición | Intuición |
 |---|---|---|
 | `utilizacion_cupo_m` | `BILL_AMT_m / LIMIT_BAL` | Cliente al tope del cupo = señal de estrés |
-| `tendencia_utilizacion` | Pendiente de la utilización en 6 meses | ¿Se está deteriorando o recuperando? |
-| `ratio_pago_m` | `PAY_AMT_m / BILL_AMT_(m-1)` | ¿Paga el mínimo o el total? |
+| `tendencia_utilizacion` | Pendiente de la utilización sobre los **5 meses del bloque homogéneo** (meses 2 a 6) | ¿Se está deteriorando o recuperando? |
+| `ratio_pago_m` | `PAY_AMT_m / BILL_AMT_(m+1)` | ¿Paga el mínimo o el total? |
 | `racha_mora` | Meses consecutivos con atraso | Persistencia > severidad puntual |
 | `mora_maxima` | Peor atraso en la ventana | Severidad histórica |
 | `volatilidad_saldo` | Desviación estándar de saldos | Comportamiento errático |
 | `meses_sin_pago` | Conteo de `PAY_AMT == 0` | Señal fuerte de incumplimiento |
+
+> **El índice del panel corre hacia atrás: `1` es el mes más reciente (septiembre 2005) y
+> `6` el más viejo (abril 2005), así que el mes cronológicamente anterior a `m` es `m+1`.**
+> Por eso el denominador de `ratio_pago_m` es `BILL_AMT_(m+1)` y no `BILL_AMT_(m-1)`. Es una
+> trampa que se pisa dos veces.
+
+> **`tendencia_utilizacion` se calcula sobre 5 meses y no sobre 6.** La
+> [decisión 3 del ADR-0004](adr/0004-codigos-no-documentados-de-pay-status.md) midió que el
+> mes 1 no comparte la escala de los meses 2 a 6 en la zona baja de los códigos, así que
+> ninguna feature de trayectoria agrega las seis columnas como un panel homogéneo. El mes 1
+> entra al modelo como variable aparte.
 
 ---
 
@@ -536,7 +547,11 @@ develop      ●──●──●──●──●──●──●──●�
 - [ ] Pipeline completo y serializable
 - [ ] Guardar procesado en parquet
 - [ ] `scripts/run_preprocessing.py` funcional end-to-end
-- [ ] Tests: shape esperado, ausencia de nulos, features derivadas correctas
+- [ ] Tests: shape esperado, features derivadas correctas, y **que todo valor faltante
+      tenga su columna indicadora correspondiente y ninguna feature impute en silencio**
+      (las features producen faltantes **por diseño**, según la
+      [decisión 2 del ADR-0005](adr/0005-diseno-de-features-de-comportamiento.md): un
+      denominador que no supera el piso da `NaN`, nunca `0`)
 - [ ] Cerrar el notebook 01 con conclusiones
 
 **Concepto clave:** por qué el preprocesamiento va **dentro** del pipeline y no antes del split. Escribirlo en el notebook.
