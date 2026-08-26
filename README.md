@@ -53,6 +53,7 @@ en el mismo orden que la CI.
 | `docs/METHODOLOGY.md` | Metodología del proyecto |
 | `docs/ROADMAP.md` | Plan de fases |
 | `docs/GIT_STRATEGY.md` | Modelo de ramas, commits y PRs |
+| `docs/DATA_DICTIONARY.md` | Contrato de datos: columnas, tipos, rangos y discrepancias con la fuente |
 | `docs/EVALUATION.md` | Registro de mediciones y baselines |
 | `docs/ERRORS_AND_LEARNINGS.md` | Registro de errores y aprendizajes |
 | `docs/adr/` | Architecture Decision Records |
