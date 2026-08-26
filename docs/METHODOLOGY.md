@@ -159,6 +159,7 @@ contenido en dos lados diverge, porque nadie actualiza dos veces.
 | `docs/DATA_DICTIONARY.md` | Contrato de datos: columnas, tipos, rangos, categorías, incluidas las no documentadas por la fuente |
 | `docs/MODEL_CARD.md` | Qué hace el modelo, con qué datos, qué NO debe usarse para, y sus limitaciones |
 | `docs/adr/` | Una entrada por decisión, con su razón. **Nunca se corrige hacia atrás** |
+| `docs/analysis/` | Mediciones de registro sobre los datos, cada una **reproducible por un script del repositorio**. Sus cifras se citan desde los ADR. **No se reescriben hacia atrás** cuando una regla posterior cambia: se les agrega una **nota de estado fechada**, porque son el registro de la evidencia sobre la que se decidió |
 | `docs/ERRORS_AND_LEARNINGS.md` | Una entrada por error real, con **el mecanismo** — no solo el síntoma |
 | `docs/EVALUATION.md` | Qué se midió, cómo, y con qué resultado |
 | `docs/GIT_STRATEGY.md` | Estrategia de ramas, commits, pull requests, releases y convención de idioma |

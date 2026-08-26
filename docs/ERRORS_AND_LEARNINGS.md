@@ -69,3 +69,71 @@ entrada corregida se corrige con una entrada nueva que referencia a la anterior.
   Ejecutor tiene acceso al repositorio y el Arquitecto no, así que comprobar el estado
   real es responsabilidad del Ejecutor incluso — sobre todo — cuando el prompt ya lo da
   por resuelto.
+
+---
+
+### 002 — Un notebook sintácticamente roto sigue siendo un JSON perfectamente válido
+
+- **Fecha:** 2026-08-25
+- **Fase:** 01-data-and-eda
+
+- **Síntoma:** una celda de código con un error de sintaxis **no produce ningún fallo**
+  al escribir el archivo. El `.ipynb` se guarda sin quejas, se abre sin quejas y se
+  versiona sin quejas. `ruff` lo lintea y pasa. El error aparece recién cuando un kernel
+  intenta ejecutar esa celda, y aparece como `SyntaxError: unterminated string literal`
+  sobre un fragmento de código que en el archivo se ve perfectamente normal.
+
+- **Causa raíz:** el formato `.ipynb` **guarda el código fuente como cadenas de texto
+  dentro de un JSON**. Para todo validador de archivos, un notebook cuyo código no compila
+  sigue siendo un documento JSON bien formado: las llaves cierran, las comillas balancean,
+  el esquema de nbformat se cumple. **La sintaxis de Python nunca se verifica al escribir,
+  porque en ese momento el código no es código: es el contenido de un campo de texto.**
+  No hay ninguna etapa entre "escribir el archivo" y "arrancar un kernel" donde alguien
+  compile ese contenido.
+
+  En el caso concreto, el notebook se generó por programa y un escape `\n` destinado a
+  formar parte de una cadena de Python dentro de una celda se resolvió una vez de más al
+  escribir el archivo, convirtiéndose en un salto de línea real. La celda quedó con una
+  cadena abierta. El archivo quedó impecable.
+
+- **Diagnóstico:** no se detectó leyendo el archivo, que se veía bien, ni con las
+  herramientas de calidad, que pasaron. Se detectó **ejecutando el notebook completo con
+  `nbconvert --execute`**, que abortó nombrando la celda y la línea. Por el camino se
+  descartó que fuera un problema de codificación del archivo y de escapado del shell: la
+  inspección con `repr()` de las líneas del generador mostró que el archivo contenía un
+  solo carácter de barra invertida donde hacían falta dos.
+
+- **Solución:** eliminar el escape en vez de arreglarlo — un `print()` vacío seguido de un
+  `print("…")`, que no necesita ningún `\n` embebido y por tanto no puede volver a
+  romperse por la misma vía. Además, mientras el generador existió, se le agregó un
+  `compile()` de cada celda de código **antes** de escribir el archivo, para que el fallo
+  apareciera al construir y no al ejecutar.
+
+- **Prevención:** la defensa que queda en el repositorio no es el generador —era
+  herramienta descartable y no se conservó— sino **la verificación del notebook**, en dos
+  partes:
+
+  1. **Ejecutarlo entero con un kernel limpio**, con
+     `uv run jupyter nbconvert --to notebook --execute --inplace notebooks/01_preprocessing.ipynb`.
+     La bandera de ejecución lanza un kernel nuevo y corre las celdas en orden; aborta si
+     alguna falla. Es un *Restart & Run All* sin intervención humana.
+  2. **Comprobar que los contadores de ejecución guardados forman una secuencia
+     consecutiva desde uno.** Un notebook cuyos contadores no son consecutivos **no es el
+     resultado de una corrida limpia**, y entonces cualquier cifra que muestre puede venir
+     de un estado que nadie puede reconstruir — que es exactamente el modo de falla de la
+     sección 7.4 de `docs/METHODOLOGY.md`.
+
+  En la jerarquía de la sección 6.5, esto es hoy una garantía de **nivel 2**: hay una
+  comprobación que lo detecta, pero alguien tiene que correrla. Subirla a nivel 1
+  requeriría que la corriera la CI en cada pull request, y **esa decisión no está tomada**.
+
+- **Aprendizaje:** **un archivo válido no es un archivo correcto, y cuanto más envuelto
+  está el contenido, más tarde se entera uno.** Un `.py` roto lo detecta el import; un
+  `.ipynb` roto no lo detecta nada hasta que hay un kernel. La regla generalizable: cuando
+  un formato *contiene* código en vez de *ser* código —notebooks, YAML con expresiones,
+  plantillas, SQL en una cadena—, la validación del contenedor no dice nada sobre el
+  contenido, y hace falta una verificación que lo ejecute de verdad.
+
+  Se conecta con la entrada 001 por el mismo lado: allí el síntoma era **la ausencia de un
+  check**, acá es **la ausencia de una validación**. Los dos fallos son invisibles mirando
+  lo que hay, y los dos se detectan preguntando explícitamente por lo que debería estar.
