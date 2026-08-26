@@ -374,6 +374,8 @@ Un *holdout* que nunca vio el entrenamiento se convierte en un flujo de peticion
 |---|---|---|
 | Gestión de paquetes | **UV** | Exclusivamente; nunca pip |
 | Datos | pandas, pyarrow | Parquet para datos procesados |
+| Visualización | matplotlib | Solo para los notebooks. **Dependencia de desarrollo, no de runtime**: ni la API ni el pipeline dibujan nada |
+| Notebooks | nbconvert | Ejecuta el notebook completo con un kernel limpio. Existe para que *"corre de arriba a abajo"* sea **un comando reproducible y no una afirmación manual**. También dependencia de desarrollo |
 | ML | scikit-learn, LightGBM | Pipeline + ColumnTransformer |
 | Tuning | Optuna | Con pruning |
 | Explicabilidad | SHAP | TreeExplainer |
@@ -422,7 +424,7 @@ credit-risk-copilot/
 │   └── corpus/                    ← documentos del RAG
 │
 ├── notebooks/
-│   ├── 01_preprocesamiento.ipynb  ← requisito explícito
+│   ├── 01_preprocessing.ipynb     ← requisito explícito
 │   └── 02_machine_learning.ipynb  ← requisito explícito
 │
 ├── src/credit_copilot/            ← módulo reusable (requisito)
@@ -529,7 +531,7 @@ develop      ●──●──●──●──●──●──●──●�
 
 #### Día 3 — EDA
 
-- [ ] `notebooks/01_preprocesamiento.ipynb`
+- [ ] `notebooks/01_preprocessing.ipynb`
   - [ ] Distribución del target y magnitud del desbalance
   - [ ] Univariado: histogramas, boxplots, detección de outliers
   - [ ] Bivariado contra el target: tasa de default por segmento
@@ -707,7 +709,7 @@ develop      ●──●──●──●──●──●──●──●�
 | Requisito | Peso | Dónde se cumple | Fase |
 |---|---|---|---|
 | Estructura de repo definida | 25% | Sección 8 | 0 |
-| Notebook de preprocesamiento | — | `notebooks/01` | 1 |
+| Notebook de preprocesamiento | — | `notebooks/01_preprocessing.ipynb` | 1 |
 | Notebook de ML | — | `notebooks/02` | 2 |
 | Carpeta de datos | — | `data/` con parquet | 1 |
 | Módulo reusable | — | `src/credit_copilot/` | 0-4 |
