@@ -29,11 +29,12 @@ That is a level-1 guarantee in the sense of section 6.5 of `docs/METHODOLOGY.md`
 tool makes the leak impossible - and it is the reason `fit` never reads `y`.
 
 **Why non-computable is a column and not a value.** A ratio whose denominator is not
-positive is not zero and it is not "no usage": it is unknown. Writing a number there
-would turn an absence into a business fact, which section 7.1 of `docs/METHODOLOGY.md`
-calls the silent imputation. The ratio is left as `NaN` and the fact that it could not be
+usable is not zero and it is not "no usage": it is unknown. Writing a number there would
+turn an absence into a business fact, which section 7.1 of `docs/METHODOLOGY.md` calls
+the silent imputation. The ratio is left as `NaN` and the fact that it could not be
 computed is emitted as its own indicator column, so a downstream model can use the
-absence as the signal it usually is. **No imputation happens in this module.**
+absence as the signal it usually is. **No imputation happens in this module.** What
+counts as usable is `MINIMUM_DENOMINATOR_NTD`, decided in ADR-0005.
 """
 
 import re
@@ -104,6 +105,26 @@ one month further back would be reaching outside the homogeneous window on the b
 side while staying inside it on the payment side, and the window is not decoration.
 """
 
+MINIMUM_DENOMINATOR_NTD: Final[int] = 100
+"""Floor a denominator must exceed, in NT dollars, for its ratio to be computable.
+
+Decided in ADR-0005. **A denominator has to be greater than this floor, not merely
+different from zero**, and the rule is strict: exactly 100 NT$ is *not* usable, so the
+floor is the largest excluded value. Strictness is the same shape the previous `> 0`
+policy had, with the excluded value moved; a floor that admitted its own value would
+make the constant read as "the smallest usable denominator", which is not what it is.
+
+The unit is in the name because the number is only meaningful with it. 100 NT$ is a
+trivial fraction of the smallest credit limit in this dataset, which is 10,000 NT$, so
+the threshold cannot discard meaningful behaviour - what it discards is arithmetic that
+is correct and says nothing, such as a payment of 10,002 NT$ against a previous balance
+of 2 NT$ scoring 5,001 on a scale where every other value is a coverage fraction.
+
+Deliberately a module constant and not a constructor parameter, for the same reason as
+`DELINQUENCY_THRESHOLD`: it transcribes a decision with an ADR behind it, and a
+hyperparameter is something a tuner is allowed to move.
+"""
+
 DELINQUENCY_THRESHOLD: Final[int] = 1
 """Lowest repayment code that counts as being in arrears, per ADR-0004.
 
@@ -167,6 +188,7 @@ PAYMENT_RATIO_NOT_COMPUTABLE_FEATURES: Final[tuple[str, ...]] = tuple(
 DELINQUENCY_STREAK_FEATURE: Final[str] = f"DELINQUENCY_STREAK_{_BLOCK_SPAN}"
 MAX_DELINQUENCY_FEATURE: Final[str] = f"MAX_DELINQUENCY_{_BLOCK_SPAN}"
 BILL_VOLATILITY_FEATURE: Final[str] = f"BILL_VOLATILITY_{_BLOCK_SPAN}"
+UTILIZATION_VOLATILITY_FEATURE: Final[str] = f"UTILIZATION_VOLATILITY_{_BLOCK_SPAN}"
 MONTHS_WITHOUT_PAYMENT_FEATURE: Final[str] = f"MONTHS_WITHOUT_PAYMENT_{_BLOCK_SPAN}"
 UTILIZATION_MOST_RECENT_FEATURE: Final[str] = f"UTILIZATION_MOST_RECENT_M{ISOLATED_MONTH}"
 IS_DELINQUENT_MOST_RECENT_FEATURE: Final[str] = f"IS_DELINQUENT_MOST_RECENT_M{ISOLATED_MONTH}"
@@ -180,12 +202,13 @@ FEATURE_NAMES: Final[tuple[str, ...]] = (
     DELINQUENCY_STREAK_FEATURE,
     MAX_DELINQUENCY_FEATURE,
     BILL_VOLATILITY_FEATURE,
+    UTILIZATION_VOLATILITY_FEATURE,
     MONTHS_WITHOUT_PAYMENT_FEATURE,
     UTILIZATION_MOST_RECENT_FEATURE,
     IS_DELINQUENT_MOST_RECENT_FEATURE,
     UTILIZATION_NOT_COMPUTABLE_FEATURE,
 )
-"""The 21 columns `transform` produces, in the order it produces them.
+"""The 22 columns `transform` produces, in the order it produces them.
 
 Declared once and used by both `transform` and `get_feature_names_out`, because a
 labelled column that does not hold what the label says is worse than an unlabelled one:
@@ -193,50 +216,64 @@ SHAP would attribute the explanation to the wrong variable and nothing would loo
 """
 
 # ---------------------------------------------------------------------------
-# The zero-denominator policy, written once
+# The denominator-floor policy, written once
 # ---------------------------------------------------------------------------
 
 
-def _ratio_over_positive_denominator(
+def _ratio_over_usable_denominator(
     numerator: pd.Series,
     denominator: pd.Series,
 ) -> pd.Series:
-    """Divide, declaring the result unknown wherever the denominator is not positive.
+    """Divide, declaring the result unknown wherever the denominator is not usable.
 
-    **The policy is `denominator > 0`, not `denominator != 0`, and the difference is the
-    interesting half.** A previous bill statement of exactly zero means there was nothing
-    to cover, so "what fraction was covered" has no answer. A *negative* previous
-    statement means the account was in credit - an overpayment or a refund, measured in
-    3,932 rows of this dataset - and dividing by it flips the sign, so a client who paid
-    5,000 against a balance of -2,000 would score -2.5 on a scale where every other value
-    is a coverage fraction. That number is not a small ratio, it is a different quantity
-    wearing the same column, and a model would read it as extreme good behaviour.
+    **The policy is `denominator > MINIMUM_DENOMINATOR_NTD`, not `denominator != 0`, and
+    the two steps away from the naive rule are both measured.** ADR-0005 holds the
+    evidence; the summary is that a denominator can be unusable in two different ways.
+
+    *It can point the wrong way.* A previous bill statement of exactly zero means there
+    was nothing to cover, so "what fraction was covered" has no answer. A *negative*
+    previous statement means the account was in credit - an overpayment or a refund,
+    measured in 3,932 rows of this dataset - and dividing by it flips the sign, so a
+    client who paid 5,000 against a balance of -2,000 would score -2.5 on a scale where
+    every other value is a coverage fraction. That is not a small ratio, it is a
+    different quantity wearing the same column, and a model would read it as extreme
+    good behaviour.
+
+    *It can be positive and still trivial.* The extreme case measured on this file is a
+    payment of 10,002 NT$ against a previous balance of 2 NT$, which divides to 5,001.
+    Arithmetically correct, and as a statement about repayment behaviour it says nothing
+    at all - it says the client had almost no bill. A rule of `> 0` admits it.
 
     The unknown is written as `NaN` and never as `0`. Zero is a measurement - "paid
     nothing" - and this is the absence of one. The caller emits the companion indicator
     column that makes the absence visible to the model.
 
     Args:
-        numerator: Amount on top of the ratio.
-        denominator: Amount underneath it.
+        numerator: Amount on top of the ratio, in NT$.
+        denominator: Amount underneath it, in NT$.
 
     Returns:
-        The elementwise ratio, `NaN` wherever the denominator is zero or negative.
+        The elementwise ratio, `NaN` wherever the denominator does not clear the floor.
     """
-    quotient: pd.Series = numerator.div(denominator.where(denominator > 0))
+    usable = denominator.where(denominator > MINIMUM_DENOMINATOR_NTD)
+    quotient: pd.Series = numerator.div(usable)
     return quotient
 
 
-def _is_not_positive(values: pd.Series) -> pd.Series:
+def _is_unusable_denominator(values: pd.Series) -> pd.Series:
     """Flag the rows where a denominator makes its ratio non-computable.
 
+    The complement of the condition in `_ratio_over_usable_denominator`, and written next
+    to it so the indicator column cannot drift away from the rule it reports.
+
     Args:
-        values: The denominator column.
+        values: The denominator column, in NT$.
 
     Returns:
-        1 where the value is zero or negative, 0 otherwise, as `int64`.
+        1 where the value does not clear `MINIMUM_DENOMINATOR_NTD`, 0 otherwise, as
+        `int64`.
     """
-    flag: pd.Series = (values <= 0).astype("int64")
+    flag: pd.Series = (values <= MINIMUM_DENOMINATOR_NTD).astype("int64")
     return flag
 
 
@@ -248,19 +285,22 @@ def _is_not_positive(values: pd.Series) -> pd.Series:
 def _shared_features(shared: pd.DataFrame) -> dict[str, pd.Series]:
     """Build the features that belong to no month.
 
-    `UTILIZATION_NOT_COMPUTABLE` marks the accounts whose credit limit is zero or
-    negative, which makes **every** utilisation ratio in this module unknown - the five
-    block months and month 1 alike, because all six share one denominator. It is a single
-    column rather than one per month precisely because `LIMIT_BAL` has no month:
-    duplicating it per month would emit perfectly collinear columns and would suggest a
-    time dimension the underlying fact does not have. For the same reason it does not
-    cross the month-1 boundary - there is no month in it to cross with.
+    `UTILIZATION_NOT_COMPUTABLE` marks the accounts whose credit limit does not clear
+    `MINIMUM_DENOMINATOR_NTD`, which makes **every** utilisation ratio in this module
+    unknown - the five block months and month 1 alike, because all six share one
+    denominator. It is a single column rather than one per month precisely because
+    `LIMIT_BAL` has no month: duplicating it per month would emit perfectly collinear
+    columns and would suggest a time dimension the underlying fact does not have. For the
+    same reason it does not cross the month-1 boundary - there is no month in it to cross
+    with.
 
-    In business terms: an account with no positive granted limit is not an account with
+    In business terms: an account with no meaningful granted limit is not an account with
     zero usage, it is an account whose usage cannot be expressed as a fraction of
-    anything. `schema.NUMERIC_RANGES` declares `LIMIT_BAL >= 1`, so a row that trips this
-    flag is a row the validator should already have rejected; the flag exists so that the
-    pipeline states the assumption instead of relying on it.
+    anything. `schema.NUMERIC_RANGES` declares `LIMIT_BAL >= 1` and the smallest limit in
+    the file is 10,000 NT$, so a row that trips this flag is a row the validator should
+    already have rejected; the flag exists so that the pipeline states the assumption
+    instead of relying on it. ADR-0005 decision 5 records why it is kept despite having
+    zero variance on this dataset.
 
     Args:
         shared: Frame containing `SHARED_SOURCE_COLUMNS`.
@@ -268,7 +308,7 @@ def _shared_features(shared: pd.DataFrame) -> dict[str, pd.Series]:
     Returns:
         Feature name -> column.
     """
-    return {UTILIZATION_NOT_COMPUTABLE_FEATURE: _is_not_positive(shared["LIMIT_BAL"])}
+    return {UTILIZATION_NOT_COMPUTABLE_FEATURE: _is_unusable_denominator(shared["LIMIT_BAL"])}
 
 
 def _utilization_trend(utilization: Mapping[str, pd.Series]) -> pd.Series:
@@ -281,7 +321,8 @@ def _utilization_trend(utilization: Mapping[str, pd.Series]) -> pd.Series:
     values over a constant - so nothing is fitted, nothing iterates, and the constant
     denominator can never be zero. This definition therefore adds **no** new
     non-computable case: the trend is unknown exactly when its inputs are, which is when
-    the credit limit is not positive.
+    the credit limit does not clear `MINIMUM_DENOMINATOR_NTD`. ADR-0005 decision 1
+    records the choice and the three definitions it was chosen over.
 
     **Why not the endpoint difference, `UTILIZATION_M2 - UTILIZATION_M6`.** It is
     determined by two months and throws the other three away, and the two it keeps are the
@@ -318,6 +359,42 @@ def _utilization_trend(utilization: Mapping[str, pd.Series]) -> pd.Series:
     return trend
 
 
+def _utilization_volatility(utilization: Mapping[str, pd.Series]) -> pd.Series:
+    """Population standard deviation of the block's utilisation, in utilisation points.
+
+    **Why this exists next to `BILL_VOLATILITY_M2_M6` rather than instead of it.**
+    Volatility measured in NT$ is confounded with the size of the credit limit: a client
+    with a 500,000 NT$ limit whose statement swings by 50,000 and a client with a 50,000
+    NT$ limit whose statement swings by 5,000 are running the *same* habit, and the NT$
+    version ranks the first one ten times more erratic. Dividing by the limit before
+    taking the deviation removes the scale, so what is left is how erratic the client is
+    relative to the room they were given.
+
+    That does not make the NT$ version wrong. An absolute swing of 50,000 NT$ is a larger
+    amount of money at risk than one of 5,000 whatever the limit says, so the two columns
+    answer different questions and the useful one is an empirical matter. **Both are
+    built and the choice is deferred to the modelling turn, where it can be made on
+    measured predictive contribution instead of on the argument above.** Dropping one now
+    would be settling with a story what should be settled with evidence.
+
+    The divisor is the population one, matching `BILL_VOLATILITY_M2_M6`: the five months
+    are the whole window being described, not a sample drawn from a larger one. Keeping
+    the two divisors equal is what makes the pair comparable at all.
+
+    Args:
+        utilization: The block's monthly utilisation columns, keyed by feature name.
+
+    Returns:
+        Standard deviation in utilisation points, `NaN` wherever the inputs are unknown.
+    """
+    frame = pd.concat([utilization[name] for name in UTILIZATION_FEATURES], axis=1)
+    # Explicit rather than relying on the default skipping behaviour: where the limit
+    # does not clear the floor every month is NaN, and a skipping deviation would report
+    # a perfectly stable 0.0 for a client whose usage is not known at all.
+    volatility: pd.Series = frame.std(axis=1, ddof=0).where(frame.notna().all(axis=1))
+    return volatility.astype("float64")
+
+
 def _block_features(block: pd.DataFrame) -> dict[str, pd.Series]:
     """Build every feature of the homogeneous repayment block, months 2 to 6.
 
@@ -328,8 +405,8 @@ def _block_features(block: pd.DataFrame) -> dict[str, pd.Series]:
 
     - **`UTILIZATION_M2..M6`** - the share of the granted limit the balance occupies in
       each month. A client sitting near the top of the limit has no headroom left, which
-      is the ordinary shape of stress before a missed payment. Unknown where the limit is
-      not positive; see `UTILIZATION_NOT_COMPUTABLE`.
+      is the ordinary shape of stress before a missed payment. Unknown where the limit
+      does not clear the floor; see `UTILIZATION_NOT_COMPUTABLE`.
     - **`UTILIZATION_TREND_M2_M6`** - whether that occupation is filling up or draining,
       in utilisation points per month. Positive means the client is consuming more of the
       limit as time runs forward; negative means recovering. Level answers *how deep*,
@@ -360,6 +437,10 @@ def _block_features(block: pd.DataFrame) -> dict[str, pd.Series]:
       a stable habit; one whose statement swings is either a heavy irregular user or an
       account under strain. The population divisor is deliberate: the five months are the
       whole window being described, not a sample drawn from a larger one.
+    - **`UTILIZATION_VOLATILITY_M2_M6`** - the same erraticism measured in utilisation
+      points instead of NT$, so that it does not carry the size of the credit limit
+      inside it. It coexists with the NT$ version on purpose; see
+      `_utilization_volatility` for why neither one is dropped yet.
     - **`MONTHS_WITHOUT_PAYMENT_M2_M6`** - how many of the five months recorded no payment
       at all. Distinct from the repayment codes, which describe the *state* of the
       account; this counts a concrete event, and a zero payment is the event that precedes
@@ -374,18 +455,18 @@ def _block_features(block: pd.DataFrame) -> dict[str, pd.Series]:
     limit = block["LIMIT_BAL"]
 
     utilization = {
-        name: _ratio_over_positive_denominator(block[_BILL_BY_MONTH[month]], limit)
+        name: _ratio_over_usable_denominator(block[_BILL_BY_MONTH[month]], limit)
         for name, month in zip(UTILIZATION_FEATURES, BLOCK_MONTHS, strict=True)
     }
     payment_ratio = {
-        name: _ratio_over_positive_denominator(
+        name: _ratio_over_usable_denominator(
             block[_PAY_AMOUNT_BY_MONTH[month]],
             block[_BILL_BY_MONTH[month + 1]],
         )
         for name, month in zip(PAYMENT_RATIO_FEATURES, PAYMENT_RATIO_MONTHS, strict=True)
     }
     payment_ratio_unknown = {
-        name: _is_not_positive(block[_BILL_BY_MONTH[month + 1]])
+        name: _is_unusable_denominator(block[_BILL_BY_MONTH[month + 1]])
         for name, month in zip(
             PAYMENT_RATIO_NOT_COMPUTABLE_FEATURES, PAYMENT_RATIO_MONTHS, strict=True
         )
@@ -408,6 +489,7 @@ def _block_features(block: pd.DataFrame) -> dict[str, pd.Series]:
         DELINQUENCY_STREAK_FEATURE: in_arrears.cumprod(axis=1).sum(axis=1).astype("int64"),
         MAX_DELINQUENCY_FEATURE: status.clip(lower=0).max(axis=1).astype("int64"),
         BILL_VOLATILITY_FEATURE: bills.std(axis=1, ddof=0).astype("float64"),
+        UTILIZATION_VOLATILITY_FEATURE: _utilization_volatility(utilization),
         MONTHS_WITHOUT_PAYMENT_FEATURE: (payments == 0).sum(axis=1).astype("int64"),
     }
 
@@ -442,7 +524,7 @@ def _isolated_features(isolated: pd.DataFrame) -> dict[str, pd.Series]:
     Returns:
         Feature name -> column.
     """
-    utilization = _ratio_over_positive_denominator(
+    utilization = _ratio_over_usable_denominator(
         isolated[_BILL_BY_MONTH[ISOLATED_MONTH]],
         isolated["LIMIT_BAL"],
     )
@@ -471,9 +553,9 @@ class PaymentBehaviourFeatures(BaseEstimator, TransformerMixin):
     load the same fitted object, so the transformation cannot be reimplemented differently
     at a second call site.
 
-    The estimator has no hyperparameters. Everything it does is fixed by ADR-0004 and by
-    the contract in `schema`, and a decision with measured evidence behind it is not
-    something a tuner should be able to move.
+    The estimator has no hyperparameters. Everything it does is fixed by ADR-0004,
+    ADR-0005 and the contract in `schema`, and a decision with measured evidence behind
+    it is not something a tuner should be able to move.
 
     `transform` returns only the derived columns, never the columns it read. In a
     `ColumnTransformer` the raw columns are routed to their own branches - one-hot for the

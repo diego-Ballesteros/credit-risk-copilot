@@ -72,7 +72,9 @@ _DEFAULT_ROW: dict[str, int] = {
     "MARRIAGE": 1,
     "AGE": 30,
     **dict.fromkeys(schema.PAY_STATUS_COLUMNS, -1),
-    **dict.fromkeys(schema.BILL_AMOUNT_COLUMNS, 100),
+    # Above `MINIMUM_DENOMINATOR_NTD`, so that a test which does not care about the
+    # denominator floor gets a computable ratio without having to say so.
+    **dict.fromkeys(schema.BILL_AMOUNT_COLUMNS, 400),
     **dict.fromkeys(schema.PAY_AMOUNT_COLUMNS, 10),
     schema.TARGET_COLUMN: 0,
 }
@@ -179,11 +181,11 @@ def test_every_payment_ratio_month_lands_on_its_own_denominator() -> None:
             "PAY_AMT2": 200,
             "PAY_AMT3": 150,
             "PAY_AMT4": 50,
-            "PAY_AMT5": 100,
+            "PAY_AMT5": 250,
             "BILL_AMT3": 400,
             "BILL_AMT4": 300,
             "BILL_AMT5": 200,
-            "BILL_AMT6": 100,
+            "BILL_AMT6": 250,
         }
     )
     assert out.loc[0, "PAYMENT_RATIO_M2"] == pytest.approx(0.5)
@@ -200,7 +202,7 @@ def test_the_oldest_block_month_has_no_payment_ratio() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The zero-denominator policy
+# The denominator-floor policy
 # ---------------------------------------------------------------------------
 
 
@@ -236,6 +238,60 @@ def test_a_non_positive_credit_limit_makes_every_utilization_unknown() -> None:
 
     assert out.loc[2, utilization_columns].notna().all()
     assert out.loc[2, "UTILIZATION_NOT_COMPUTABLE"] == 0
+
+
+def test_a_positive_previous_balance_below_the_floor_makes_the_ratio_non_computable() -> None:
+    """A denominator of 2 NT$ is positive and still unusable: 10,002 / 2 would give 5,001.
+
+    That row is not invented for the test - it is the maximum of `PAYMENT_RATIO_M2` on
+    the real file under the old `> 0` rule, quoted in ADR-0005 decision 2.
+    """
+    out = features(
+        {"PAY_AMT2": 10_002, "BILL_AMT3": 2},
+        {"PAY_AMT2": 100, "BILL_AMT3": 99},
+        {"PAY_AMT2": 100, "BILL_AMT3": 101},
+    )
+    for row in (0, 1):
+        assert pd.isna(out.loc[row, "PAYMENT_RATIO_M2"]), "a trivial denominator was divided by"
+        assert out.loc[row, "PAYMENT_RATIO_NOT_COMPUTABLE_M2"] == 1
+
+    assert out.loc[2, "PAYMENT_RATIO_M2"] == pytest.approx(100 / 101)
+    assert out.loc[2, "PAYMENT_RATIO_NOT_COMPUTABLE_M2"] == 0
+
+
+def test_a_denominator_exactly_at_the_floor_is_not_usable() -> None:
+    """The rule chosen is **strict**: `denominator > floor`, so the floor itself is out.
+
+    Documented here rather than only in the ADR, because "greater than" and "at least"
+    are one character apart in the code and cannot be told apart by reading the constant.
+    The floor is the largest *excluded* value, which is the same shape the previous `> 0`
+    rule had - zero was excluded too.
+    """
+    floor = builder.MINIMUM_DENOMINATOR_NTD
+    out = features(
+        {"PAY_AMT2": 50, "BILL_AMT3": floor},
+        {"PAY_AMT2": 50, "BILL_AMT3": floor + 1},
+    )
+    assert pd.isna(out.loc[0, "PAYMENT_RATIO_M2"])
+    assert out.loc[0, "PAYMENT_RATIO_NOT_COMPUTABLE_M2"] == 1
+
+    assert out.loc[1, "PAYMENT_RATIO_M2"] == pytest.approx(50 / (floor + 1))
+    assert out.loc[1, "PAYMENT_RATIO_NOT_COMPUTABLE_M2"] == 0
+
+
+def test_the_floor_applies_to_the_credit_limit_too_and_not_only_to_the_balance() -> None:
+    """One policy, both divisions. A limit at or below the floor makes utilisation unknown."""
+    floor = builder.MINIMUM_DENOMINATOR_NTD
+    out = features({"LIMIT_BAL": floor}, {"LIMIT_BAL": floor + 1})
+    utilization_columns = [*builder.UTILIZATION_FEATURES, "UTILIZATION_MOST_RECENT_M1"]
+
+    assert out.loc[0, utilization_columns].isna().all()
+    assert pd.isna(out.loc[0, "UTILIZATION_TREND_M2_M6"])
+    assert pd.isna(out.loc[0, "UTILIZATION_VOLATILITY_M2_M6"]), "a stable 0.0 was invented"
+    assert out.loc[0, "UTILIZATION_NOT_COMPUTABLE"] == 1
+
+    assert out.loc[1, utilization_columns].notna().all()
+    assert out.loc[1, "UTILIZATION_NOT_COMPUTABLE"] == 0
 
 
 def test_the_non_computable_indicators_are_columns_of_their_own() -> None:
@@ -363,6 +419,69 @@ def test_bill_volatility_is_the_population_standard_deviation_of_the_block() -> 
 def test_bill_volatility_is_zero_for_a_perfectly_stable_balance() -> None:
     out = features(dict.fromkeys(schema.BILL_AMOUNT_COLUMNS, 5_000))
     assert out.loc[0, "BILL_VOLATILITY_M2_M6"] == pytest.approx(0.0)
+
+
+def test_utilization_volatility_is_the_population_deviation_of_the_utilisations() -> None:
+    """Limit 1,000 and balances 100, 0, 0, 0, 0: utilisations 0.1, 0, 0, 0, 0.
+
+    Mean 0.02, variance (0.08^2 + 4 x 0.02^2) / 5 = 0.0016, deviation exactly 0.04 - and
+    the NT$ version of the same row is exactly 40.0, a thousand times larger, which is
+    the credit limit it still carries inside it.
+    """
+    out = features(
+        {
+            "LIMIT_BAL": 1_000,
+            "BILL_AMT2": 100,
+            "BILL_AMT3": 0,
+            "BILL_AMT4": 0,
+            "BILL_AMT5": 0,
+            "BILL_AMT6": 0,
+        }
+    )
+    assert out.loc[0, "UTILIZATION_VOLATILITY_M2_M6"] == pytest.approx(0.04)
+    assert out.loc[0, "BILL_VOLATILITY_M2_M6"] == pytest.approx(40.0)
+
+
+def test_utilization_volatility_is_invariant_to_the_credit_limit_and_the_ntd_one_is_not() -> None:
+    """The contrast that is the whole reason the normalised column was added.
+
+    Two clients with the *same* utilisation path - 0.1, 0.2, 0.3, 0.4, 0.5 - and limits
+    ten times apart. They are running one habit, so the scale-free column must give them
+    one number; the NT$ column separates them by a factor of ten, which is the credit
+    limit leaking into a measurement that is supposed to be about erraticism.
+    """
+    small_limit = {
+        "LIMIT_BAL": 10_000,
+        "BILL_AMT6": 1_000,
+        "BILL_AMT5": 2_000,
+        "BILL_AMT4": 3_000,
+        "BILL_AMT3": 4_000,
+        "BILL_AMT2": 5_000,
+    }
+    large_limit = {
+        "LIMIT_BAL": 100_000,
+        "BILL_AMT6": 10_000,
+        "BILL_AMT5": 20_000,
+        "BILL_AMT4": 30_000,
+        "BILL_AMT3": 40_000,
+        "BILL_AMT2": 50_000,
+    }
+    out = features(small_limit, large_limit)
+
+    for month in builder.BLOCK_MONTHS:
+        assert out.loc[0, f"UTILIZATION_M{month}"] == pytest.approx(
+            out.loc[1, f"UTILIZATION_M{month}"]
+        )
+
+    expected = np.std([0.1, 0.2, 0.3, 0.4, 0.5])
+    assert out.loc[0, "UTILIZATION_VOLATILITY_M2_M6"] == pytest.approx(expected)
+    assert out.loc[1, "UTILIZATION_VOLATILITY_M2_M6"] == pytest.approx(expected)
+
+    assert out.loc[0, "BILL_VOLATILITY_M2_M6"] == pytest.approx(1_414.213562, abs=1e-5)
+    assert out.loc[1, "BILL_VOLATILITY_M2_M6"] == pytest.approx(14_142.13562, abs=1e-4)
+    assert out.loc[1, "BILL_VOLATILITY_M2_M6"] == pytest.approx(
+        10 * out.loc[0, "BILL_VOLATILITY_M2_M6"]
+    )
 
 
 def test_months_without_payment_counts_the_zero_payments_of_the_block_only() -> None:
@@ -504,7 +623,7 @@ def test_get_feature_names_out_matches_the_columns_transform_produces() -> None:
 
 def test_the_declared_feature_names_are_unique_and_complete() -> None:
     assert len(FEATURE_NAMES) == len(set(FEATURE_NAMES))
-    assert len(FEATURE_NAMES) == 21
+    assert len(FEATURE_NAMES) == 22
 
 
 def test_a_joblib_round_trip_produces_the_same_frame(tmp_path: Path) -> None:
