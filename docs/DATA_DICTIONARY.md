@@ -281,6 +281,148 @@ omitido por ausencia de `ID`. `uv run python scripts/download_dataset.py` sale c
 
 ---
 
+## Features derivadas del comportamiento de pago
+
+**Estas columnas no vienen en la fuente: las construye el proyecto.** No forman parte de
+la tabla que devuelve `load_dataset` —que sigue teniendo 24 columnas— sino que las produce
+el transformador `PaymentBehaviourFeatures` del módulo `features.builder`, que es un paso
+de `Pipeline` de sklearn y no una función suelta. La razón de que sea un estimador y no una
+función está en la sección 6.3 de `docs/METHODOLOGY.md`: el notebook, el script de
+entrenamiento y la API tienen que consumir **el mismo objeto**, porque dos copias de la
+misma aritmética divergen.
+
+Son **21 columnas**. Ponen a prueba la hipótesis principal de `docs/ROADMAP.md` — que el
+comportamiento de pago reciente predice mejor que la demografía estática — y su poder
+predictivo **todavía no está medido**: este documento describe qué son y qué contienen, no
+cuánto aportan.
+
+**Fecha de medición de los rangos observados:** 2026-08-25, sobre las 30.000 filas del
+archivo descargado.
+
+### El corte que impone el ADR-0004
+
+La [decisión 3 del ADR-0004](adr/0004-codigos-no-documentados-de-pay-status.md) gobierna la
+forma de esta tabla: el mes 1 no comparte la escala de los meses 2 a 6 en la zona baja de
+los códigos, así que **ninguna feature agrega las seis columnas como si fueran un panel
+homogéneo**. Cada feature de abajo pertenece a exactamente uno de tres grupos:
+
+| Grupo | Qué lee | Cuántas features |
+| --- | --- | ---: |
+| **Bloque homogéneo** | Meses 2 a 6 (agosto a abril) + `LIMIT_BAL` | 17 |
+| **Mes 1 aislado** | Mes 1 (septiembre) + `LIMIT_BAL` | 2 |
+| **Sin mes** | Solo `LIMIT_BAL` | 1 |
+
+`LIMIT_BAL` aparece en los tres porque **no tiene mes**: es un atributo de la cuenta, no
+del panel, así que usarlo a los dos lados del corte no cruza ninguna frontera.
+
+> **`PAY_AMT1` no se usa en ninguna feature de este módulo, y esa ausencia es una
+> consecuencia medible de la regla de aislamiento.** Un ratio de pago del mes 1 necesitaría
+> el saldo del mes 2 como denominador, y eso sí cruzaría el corte. La feature no se
+> construye; la decisión de si vale la pena hacer una excepción para los montos —donde el
+> ADR-0004 no midió ningún problema de escala, porque el problema es de los códigos— no
+> está tomada.
+
+### Las 21 columnas
+
+| Nombre | Grupo | Definición | Columnas de origen | Rango esperado | Rango observado | Qué mide en términos de negocio |
+| --- | --- | --- | --- | --- | --- | --- |
+| `UTILIZATION_M2` … `UTILIZATION_M6` | Bloque | `BILL_AMTm / LIMIT_BAL` para cada mes del bloque | `BILL_AMT2..6`, `LIMIT_BAL` | Real. Típicamente 0 … 1, **sin cota por arriba ni por abajo** | -1,5095 … 10,6886 | Qué fracción del cupo otorgado ocupa el saldo. Un cliente pegado al techo del cupo se quedó sin margen, que es la forma habitual del estrés financiero antes de un impago |
+| `UTILIZATION_TREND_M2_M6` | Bloque | Pendiente de la recta de mínimos cuadrados de las cinco utilizaciones contra el tiempo, en puntos de utilización por mes. **Positivo = la utilización sube con el paso del tiempo** | `BILL_AMT2..6`, `LIMIT_BAL` | Real, centrado en 0 | -0,5407 … 1,0846 | Si el cliente se está llenando o vaciando. El nivel dice *qué tan hondo*; la tendencia dice *hacia dónde*, y un cliente al 40% subiendo es otro riesgo que uno al 40% bajando |
+| `PAYMENT_RATIO_M2` … `PAYMENT_RATIO_M5` | Bloque | `PAY_AMTm / BILL_AMT(m+1)` — lo abonado sobre el saldo del mes **cronológicamente anterior**, que es el de índice **mayor** | `PAY_AMT2..5`, `BILL_AMT3..6` | ≥ 0, típicamente 0 … 1. `NaN` si el denominador no es positivo | 0 … 5.001,0 (p99 ≈ 1,35) | Qué fracción del resumen anterior pagó realmente. Es el separador de comportamiento más nítido que midió el ADR-0004: mediana 1,000 para los códigos que saldan contra 0,042–0,057 para el revolvente |
+| `PAYMENT_RATIO_NOT_COMPUTABLE_M2` … `_M5` | Bloque | 1 si el saldo del mes anterior es cero o negativo | `BILL_AMT3..6` | {0, 1} | {0, 1} — 11,75% a 15,69% en 1 | Que el ratio de ese mes **no existe**, no que sea bajo. La ausencia suele ser informativa por sí sola |
+| `DELINQUENCY_STREAK_M2_M6` | Bloque | Meses consecutivos con código ≥ 1 contando hacia atrás desde el mes **más reciente del bloque** (mes 2). Se corta en el primer mes sin mora | `PAY_STATUS_2..6` | Entero 0 … 5 | 0 … 5 — 85,21% en 0, 4,56% en 5 | Persistencia, no severidad: un mes tarde es un accidente, cuatro seguidos son una trayectoria. Un cliente que se atrasó y se recuperó saca 0 por más grave que haya sido el tramo anterior |
+| `MAX_DELINQUENCY_M2_M6` | Bloque | Máximo de `max(código, 0)` sobre el bloque | `PAY_STATUS_2..6` | Entero 0 … 9 (la fuente declara hasta 9) | 0 … 8 | El peor atraso alcanzado en cualquier momento del bloque, en meses. **No supone que los códigos sean ordinales**: los códigos por debajo del umbral se aplastan a 0 primero, así que `-2`, `-1` y `0` valen todos "sin mora" en vez de ordenarse entre sí ([ADR-0004](adr/0004-codigos-no-documentados-de-pay-status.md) §2) |
+| `BILL_VOLATILITY_M2_M6` | Bloque | Desviación estándar **poblacional** (`ddof=0`) de los cinco saldos | `BILL_AMT2..6` | ≥ 0, en NT$ | 0 … 621.397,56 (mediana 3.320,59) | Qué tan errático es el saldo. Un resumen que casi no se mueve es un hábito estable; uno que oscila es un usuario irregular o una cuenta bajo tensión. El divisor poblacional es deliberado: los cinco meses **son** la ventana descrita, no una muestra de algo más grande |
+| `MONTHS_WITHOUT_PAYMENT_M2_M6` | Bloque | Cuántos de los cinco meses registran `PAY_AMTm == 0` | `PAY_AMT2..6` | Entero 0 … 5 | 0 … 5 — 54,52% en 0, 6,21% en 5 | Un evento concreto, distinto del código de mora, que describe un *estado*. Un pago de cero es el evento que precede al estado |
+| `UTILIZATION_MOST_RECENT_M1` | Mes 1 | `BILL_AMT1 / LIMIT_BAL` | `BILL_AMT1`, `LIMIT_BAL` | Real. Típicamente 0 … 1, sin cota | -0,6199 … 6,4553 | La misma cantidad que las utilizaciones del bloque, deliberadamente **no promediada con ellas**: es la observación más cercana al mes que el target describe y la primera que miraría un analista de riesgo |
+| `IS_DELINQUENT_MOST_RECENT_M1` | Mes 1 | 1 si `PAY_STATUS_1 ≥ 1` | `PAY_STATUS_1` | {0, 1} | {0, 1} — 22,73% en 1 | Si el cliente estaba en mora en el último mes observado. Binaria y no el código crudo, porque el código es categórico: entregar el entero le enseñaría al modelo una monotonía que el dato niega. El código no se pierde, va a one-hot en otra rama del pipeline |
+| `UTILIZATION_NOT_COMPUTABLE` | Sin mes | 1 si `LIMIT_BAL ≤ 0` | `LIMIT_BAL` | {0, 1} | **Constante en 0** sobre las 30.000 filas | Que la utilización **de todas** las features que la usan —las cinco del bloque y la del mes 1— no se puede expresar, porque comparten un único denominador. Una cuenta sin cupo positivo no es una cuenta sin uso: es una cuenta cuyo uso no es una fracción de nada |
+
+### Política de denominador no positivo
+
+**Una sola política, escrita en un solo lugar y aplicada a las dos divisiones:** si el
+denominador no es **estrictamente positivo**, el resultado es `NaN` y el hecho de que no se
+pudo calcular sale como **columna indicadora propia**.
+
+Dos elecciones que no son obvias:
+
+- **El criterio es `> 0`, no `!= 0`.** Un saldo anterior de cero significa que no había
+  nada que cubrir, así que "qué fracción se cubrió" no tiene respuesta. Un saldo anterior
+  **negativo** significa que la cuenta estaba a favor del cliente —legítimo y frecuente:
+  3.932 saldos negativos en el archivo— y dividir por él invierte el signo. Un cliente que
+  abona 5.000 sobre un saldo de -2.000 daría -2,5 en una escala donde todo lo demás es una
+  fracción de cobertura. Eso no es un ratio chico: es otra cantidad disfrazada con el mismo
+  nombre, y un modelo la leería como comportamiento excelente.
+- **El faltante es `NaN`, nunca `0`.** Cero es una medición —"no pagó nada"— y esto es la
+  ausencia de una. Convertirlo en 0 es exactamente el modo de falla de la sección 7.1 de
+  `docs/METHODOLOGY.md`: un "no sé" que pasa a ser un hecho de negocio falso. **Este módulo
+  no imputa nada**; qué hacer con esos `NaN` es una decisión del paso siguiente del
+  pipeline y debe quedar declarada cuando se tome.
+
+Alcance medido de la política:
+
+| Columna | Filas no calculables | % |
+| --- | ---: | ---: |
+| `PAYMENT_RATIO_NOT_COMPUTABLE_M2` | 3.525 | 11,75% |
+| `PAYMENT_RATIO_NOT_COMPUTABLE_M3` | 3.870 | 12,90% |
+| `PAYMENT_RATIO_NOT_COMPUTABLE_M4` | 4.161 | 13,87% |
+| `PAYMENT_RATIO_NOT_COMPUTABLE_M5` | 4.708 | 15,69% |
+| `UTILIZATION_NOT_COMPUTABLE` | 0 | 0,00% |
+
+**6.862 filas (22,87%) tienen al menos un ratio de pago no calculable** y 1.893 (6,31%)
+tienen los cuatro. De estas últimas, el 60,17% trae el código `-2` en los cinco meses del
+bloque: son cuentas sin consumo, no cuentas rotas. El indicador está midiendo un
+comportamiento real, que es la razón por la que se conserva como columna en vez de tirarse.
+
+`UTILIZATION_NOT_COMPUTABLE` sale constante porque `LIMIT_BAL` tiene mínimo 10.000 en este
+archivo y `schema.NUMERIC_RANGES` ya declara `LIMIT_BAL ≥ 1`. **Con varianza cero no aporta
+información a ningún modelo sobre este dataset.** Se conserva igual: existe para que el
+pipeline *declare* el supuesto en vez de apoyarse en él, y para que una extracción futura
+con un cupo corrupto se vea en una columna en lugar de propagarse como `NaN` sin
+explicación.
+
+### Rangos que conviene mirar antes de modelar
+
+Tres hechos medidos que el rango "típico" de la tabla no transmite:
+
+- **La utilización no está acotada a [0, 1] y se sale por los dos lados.** Por arriba: 2.115
+  filas (7,05%) en el mes 1 y entre 798 y 1.940 filas por mes en el bloque. El máximo es
+  10,69 — un saldo de 855.086 NT$ contra un cupo de 80.000. Por abajo: alrededor del 2% de
+  las filas por mes, porque un saldo negativo es legítimo. **Ninguno de los dos casos es un
+  error de cálculo**; son el dato.
+- **El ratio de pago tiene una cola larguísima.** El p99 está en ≈1,35 y el máximo en
+  5.001,0, que corresponde a un abono de 10.002 NT$ contra un saldo anterior de **2 NT$**.
+  La política de denominador excluye el cero y los negativos, pero un denominador de 2 NT$
+  es positivo y produce un número enorme que es aritméticamente correcto y como señal de
+  negocio no dice nada. Entre 116 y 138 filas por mes (≈0,4%) superan 2,0.
+- **`MAX_DELINQUENCY_M2_M6` tiene un agujero en el valor 1:** solo 23 filas (0,08%), contra
+  22.300 (74,33%) en 0 y 6.675 (22,25%) en 2. Es la decisión 3 del ADR-0004 reapareciendo
+  desde otro ángulo — el código `1` aparece 28, 4, 2, 0 y 0 veces en los meses 2 a 6 — y
+  significa que la escala de esta feature **salta de 0 a 2** en la práctica.
+
+### Correspondencia con las 7 features del `docs/ROADMAP.md` §4.4
+
+El roadmap enumera siete features con nombres en español. Los identificadores del código
+van en inglés por la convención de idioma del proyecto, así que la correspondencia se
+registra acá:
+
+| `docs/ROADMAP.md` §4.4 | Implementado como | Nota |
+| --- | --- | --- |
+| `utilizacion_cupo_m` | `UTILIZATION_M2..M6` + `UTILIZATION_MOST_RECENT_M1` | Se parte en dos por el ADR-0004 §3 |
+| `tendencia_utilizacion` | `UTILIZATION_TREND_M2_M6` | El roadmap dice "en 6 meses"; el ADR-0004 §3 la restringe a **5**, los meses 2 a 6 |
+| `ratio_pago_m` | `PAYMENT_RATIO_M2..M5` | El roadmap la escribe `PAY_AMT_m / BILL_AMT_(m-1)`. Con el índice canónico —1 es el mes más reciente— el mes cronológicamente anterior es **`m+1`**, y así está implementada |
+| `racha_mora` | `DELINQUENCY_STREAK_M2_M6` | |
+| `mora_maxima` | `MAX_DELINQUENCY_M2_M6` | |
+| `volatilidad_saldo` | `BILL_VOLATILITY_M2_M6` | |
+| `meses_sin_pago` | `MONTHS_WITHOUT_PAYMENT_M2_M6` | |
+
+Las cinco columnas restantes —los cuatro `PAYMENT_RATIO_NOT_COMPUTABLE_M*` y
+`UTILIZATION_NOT_COMPUTABLE`— no están en el roadmap: son la política de denominador hecha
+visible, y existen porque un "no calculable" enterrado dentro de la feature sería una
+imputación silenciosa.
+
+---
+
 *Toda afirmación negativa de este documento — "0 nulos", "0 duplicados exactos", "cero
 pagos negativos" — es cierta a la fecha de medición y debe reverificarse cuando cambie la
 fuente. Correr `uv run python scripts/download_dataset.py --force` las reverifica todas.*

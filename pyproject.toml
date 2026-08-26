@@ -9,6 +9,7 @@ dependencies = [
     "pyarrow>=16.0",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
+    "scikit-learn>=1.5",
     "ucimlrepo>=0.0.7",
 ]
 
@@ -27,6 +28,7 @@ dev = [
     "mypy>=1.10",
     "pre-commit>=3.7",
     "ipykernel>=6.29",
+    "joblib>=1.4",
 ]
 
 # ---------------------------------------------------------------------------
