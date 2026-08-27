@@ -3,6 +3,7 @@
 venv/
 env/
 ENV/
+.env
 
 # --- Cachés y artefactos de Python -----------------------------------------
 __pycache__/
