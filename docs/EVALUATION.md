@@ -654,3 +654,91 @@ Recall 0,7187 · Precisión 0,4099 · Costo esperado 16.201 unidades de falso po
   - **Límite:** el modelo está registrado como **candidato**, no promovido a producción. Lo
     que falta antes de un despliegue real está en la sección 8 del Model Card, empezando por
     la validación fuera de tiempo que el ADR-0001 declaró imposible con estos datos.
+
+### 010 — Equidad del modelo productivo entre grupos demográficos
+
+- **Fecha:** 2026-08-26
+- **Fase:** 02-modeling
+- **Objeto evaluado:** el modelo productivo —random forest tuneado, `class_weight=None`, más
+  calibración sigmoide— en el umbral operativo **0,160**. **Esta entrada mide disparidad y no
+  la mitiga**: mitigar es una decisión con alternativas que no se ha tomado.
+- **Datos:** UCI 350, 30.000 filas, prevalencia 0,221200.
+- **Protocolo:** probabilidades **fuera de fold**,
+  `StratifiedKFold(5, shuffle=True, random_state=42)`. Ninguna fila fue puntuada por un modelo
+  ajustado con ella; una tasa de rechazo calculada en muestra describiría el entrenamiento.
+- **Atributos protegidos:** `SEX`, `EDUCATION`, `MARRIAGE`, `AGE` en tramos de década
+  (`21-29`, `30-39`, `40-49`, `50+`; el último abierto porque hay solo 339 clientes de 60 o
+  más y un tramo de ese tamaño no sostiene una tasa). `LIMIT_BAL` **no** se cuenta como
+  protegido: es una propiedad de la cuenta, no de la persona.
+- **Piso de tamaño de grupo:** **500 filas**, derivado de la aritmética: el error estándar de
+  una proporción cercana a la prevalencia es 1,9 puntos con n = 500 y 5,7 con n = 54. Los
+  grupos menores se reportan con su tamaño y quedan fuera de los máximos y mínimos.
+
+**Brechas — sobre grupos de al menos 500 filas**
+
+| Atributo | Paridad demográfica (dif.) | Razón de impacto dispar | Equidad de oportunidad | **Brecha FPR** | Brecha de tasa base |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| SEX | 0,0520 | 0,8759 | 0,0278 | 0,0406 | 0,0339 |
+| **EDUCATION** | **0,1198** | **0,7364** | 0,0668 | **0,1029** | 0,0592 |
+| MARRIAGE | 0,0106 | 0,9730 | 0,0043 | 0,0009 | 0,0254 |
+| **AGE** | **0,0991** | **0,7796** | 0,0499 | **0,0871** | 0,0505 |
+
+- **Baseline — doble, y las dos mitades son necesarias.** El primero es la **tasa de
+  incumplimiento real de cada grupo**, en la última columna: sin ella no se puede distinguir
+  disparidad de trato de disparidad de base, porque un grupo que incumple más y es rechazado
+  más está recibiendo exactamente lo que el modelo debe hacer. El segundo es el **modelo ciego
+  a los atributos protegidos**, medido sobre los mismos folds, que fija cuánta brecha
+  sobrevive cuando el modelo no puede ver la variable. Sin el primero no se puede interpretar
+  la brecha; sin el segundo no se puede saber si es corregible por omisión.
+- **Resultado:** **hay disparidad y no se explica solo por la tasa base.** Para los tres
+  atributos con brecha, la diferencia de rechazo es cerca del **doble** de la diferencia de
+  tasa base. `EDUCATION` (0,7364) y `AGE` (0,7796) caen **por debajo de 0,80** en la razón de
+  impacto dispar. `MARRIAGE` es la excepción: su brecha de rechazo (0,0106) es **menor** que
+  su brecha de tasa base (0,0254).
+- **Reproducción:** `uv run python scripts/run_fairness_analysis.py`. Run de MLflow
+  `0db99c212617455ba7d90b80783aa9eb`, etiquetado `run_type=fairness-analysis` y
+  `measures_only=true`, con las ocho tablas por grupo como artefactos. Evidencia completa en
+  `docs/analysis/fairness-evidence.md`.
+
+**El modelo ciego a los atributos protegidos**
+
+| Modelo | PR-AUC | Columnas |
+| --- | ---: | ---: |
+| Completo | 0,5640 ± 0,0075 | 110 |
+| Ciego | 0,5619 ± 0,0093 | 99 |
+| **Diferencia** | **−0,0020** | −11 |
+
+| Brecha FPR | Completo | Ciego | Reducción |
+| --- | ---: | ---: | ---: |
+| SEX | 0,0406 | 0,0369 | −9,1% |
+| EDUCATION | 0,1029 | 0,0908 | −11,8% |
+| AGE | 0,0871 | 0,0606 | −30,4% |
+| MARRIAGE | 0,0009 | 0,0188 | empeora |
+
+- **Interpretación:**
+  - **La brecha que importa es la de FPR, y está lejos de ser trivial.** Mide diferencias
+    **entre clientes que habrían pagado**, donde no existe diferencia de mérito que justifique
+    nada. Traducida a personas sobre estas 30.000 filas: **633** clientes de `EDUCATION 2` y
+    **379** de `EDUCATION 3` son rechazados de más frente a la tasa de `EDUCATION 1`; **390**
+    de `AGE 21-29` y **174** de `AGE 50+` frente a `AGE 30-39`; **366** hombres frente a la
+    tasa de las mujeres. Son personas que habrían pagado y a las que se niega el crédito.
+  - **La disparidad de trato es real y separable de la de base.** El caso más claro es
+    `EDUCATION`: la tasa base va de 0,1923 a 0,2516, una diferencia de 5,9 puntos, mientras la
+    tasa de rechazo va de 0,3347 a 0,4545, una diferencia de 12,0 puntos. El rechazo crece
+    aproximadamente al doble del ritmo del incumplimiento.
+  - **La equidad por omisión no funciona en este dataset, y esto es el hallazgo menos obvio
+    del turno.** Cegar el modelo a las cuatro variables **cuesta −0,0020 de PR-AUC, dentro del
+    ruido**: es esencialmente gratis. Y elimina solo entre el **9% y el 30%** de la brecha de
+    FPR. La mayor parte sobrevive porque las features de comportamiento están correlacionadas
+    con las demográficas: borrar la etiqueta no borra la información. En `MARRIAGE` la brecha
+    **empeora**, de 0,0009 a 0,0188, lo que muestra que quitar variables puede mover una
+    disparidad en cualquier dirección.
+  - **Que la demografía pesara 4,5% de la atribución SHAP no era prueba de ausencia de sesgo,
+    y ahora está demostrado.** La entrada 009 dejó esa laguna abierta explícitamente; esta
+    entrada la cierra con el resultado contrario al que un peso pequeño sugeriría.
+  - **Límites explícitos.** La medición es específica de **este umbral** (0,160): otro corte
+    da otras tasas y otras brechas. No cubre **interseccionalidad** —sexo × edad no se midió—,
+    ni calibración por grupo, ni equidad individual. Y `EDUCATION` y `MARRIAGE` no son
+    características protegidas en toda jurisdicción, aunque se traten como tales aquí.
+  - **Lo que esta entrada NO dice:** qué hacer. Reponderar, umbralizar por grupo o quitar
+    variables son decisiones con alternativas y costos, y ninguna se ha tomado.

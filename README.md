@@ -57,4 +57,5 @@ en el mismo orden que la CI.
 | `docs/EVALUATION.md` | Registro de mediciones y baselines |
 | `docs/MODEL_CARD.md` | Qué hace el modelo productivo, con qué datos, su umbral operativo, sus limitaciones y para qué **no** debe usarse |
 | `docs/ERRORS_AND_LEARNINGS.md` | Registro de errores y aprendizajes |
+| `docs/analysis/` | Mediciones de registro sobre los datos y el modelo, cada una reproducible por un script del repositorio |
 | `docs/adr/` | Architecture Decision Records |

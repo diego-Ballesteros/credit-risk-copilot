@@ -9,6 +9,39 @@
 
 ---
 
+## 0 · Las dos cosas que hay que leer antes que nada
+
+### El supuesto de costos mueve más negocio que todo el modelado
+
+El umbral operativo de **0,160** no sale del modelo: sale de suponer que **un falso negativo
+cuesta 5 veces un falso positivo**, y ese cociente **no tiene respaldo empírico en este
+dataset**. No hay datos de exposición, de recuperación ni de margen, así que no se pudo
+medir: se declaró.
+
+| FN:FP | Umbral | Clientes rechazados de 30.000 |
+| --- | ---: | ---: |
+| 3:1 | 0,220 | 7.768 |
+| **5:1** | **0,160** | **11.635** |
+| 10:1 | 0,105 | 22.329 |
+
+**Mover el cociente entre 3:1 y 10:1 desplaza a 14.561 clientes: el 48,5% del libro.**
+
+Para comparar: **todo lo ganado por modelado en esta fase** —pasar de regresión logística a
+random forest, quitar el tratamiento de desbalance y tunear— **suma +0,0240 de PR-AUC**.
+Quien fija el cociente de costos toma una decisión mucho mayor que la de elegir el modelo.
+Conseguir datos que permitan medirlo tiene más valor esperado que cualquier mejora adicional
+del modelo. Detalle en la sección 5 y en la entrada 008 de `docs/EVALUATION.md`.
+
+### El modelo trata de forma distinta a distintos grupos demográficos
+
+Medido, no supuesto. En el umbral de 0,160, la razón de impacto dispar cae **por debajo de
+0,80** para `EDUCATION` (0,7364) y `AGE` (0,7796). Entre clientes **que habrían pagado**, la
+tasa de rechazo por error difiere hasta **10,3 puntos porcentuales** según el nivel educativo.
+Las brechas son **mayores que las diferencias de tasa base**, y **sobreviven** a quitarle al
+modelo las variables protegidas. Sección 6 bis.
+
+---
+
 ## 1 · Qué hace
 
 Recibe las **23 columnas crudas** de un cliente de tarjeta de crédito —cinco atributos
@@ -93,13 +126,19 @@ desviación entre folds de 0,0080 (entrada 006). Se usan los hiperparámetros tu
 `max_features=0,3`, que es la única dimensión sobre la que la evidencia habló; el forest sin
 tunear sería una elección igualmente defendible.
 
-**La calibración tampoco ayudó, y eso está medido:** el forest crudo obtuvo el **mejor**
-Brier de los tres brazos (0,133228 contra 0,134009 sigmoide y 0,133551 isotónica) y el menor
-error en cada decil. Un bosque de 300 árboles promediando frecuencias de hoja ya produce una
-probabilidad, no una proporción de votos. Se conserva la calibración sigmoide porque su
-costo está medido y es despreciable —**+0,0008 de Brier y exactamente 0,0000 de PR-AUC**— y
-porque un mapa de dos parámetros es un seguro barato si la distribución de scores se mueve.
-Quitarla es una alternativa defendible y la evidencia está en la entrada 007.
+**La calibración es una decisión conservadora SIN ganancia medida, no una mejora.** El forest
+crudo obtuvo el **mejor** Brier de los tres brazos (0,133228 contra 0,134009 sigmoide y
+0,133551 isotónica) y el menor error en cada decil. Un bosque de 300 árboles promediando
+frecuencias de hoja ya produce una probabilidad, no una proporción de votos: la media
+predicha coincide con la prevalencia con un sesgo de +0,000043.
+
+La decisión de calibrar **se tomó antes de medirla y la evidencia la contradice**; queda
+registrada como tal en el **ADR-0007, decisión 1**. La sigmoide se mantiene porque su costo
+está acotado y medido —**+0,0008 de Brier, dentro de la desviación entre folds de 0,002, y
+exactamente 0,0000 de PR-AUC**— y porque un mapa de dos parámetros es un seguro barato si la
+distribución de puntuaciones se desplaza en producción. **Ese beneficio no se ha observado en
+estos datos.** Quitar la calibración es una alternativa igualmente defendible con la misma
+evidencia.
 
 **La calibración isotónica se descartó por una razón medida:** costó **0,0133 de PR-AUC**.
 Un mapa monótono no puede reordenar nada, pero la regresión isotónica es solo *no
@@ -214,6 +253,84 @@ Artefactos en MLflow: beeswarm global, gráfico de barras, cinco *dependence plo
 
 ---
 
+## 6 bis · Equidad entre grupos demográficos — medida
+
+Probabilidades **fuera de fold**, umbral 0,160. Toda tasa lleva el tamaño de su grupo.
+Evidencia completa en [`docs/analysis/fairness-evidence.md`](analysis/fairness-evidence.md)
+y entrada 010 de `docs/EVALUATION.md`. **Esta sección mide; no corrige.**
+
+### Definiciones
+
+`Ŷ = 1` significa que el modelo **recomienda rechazar**. El rechazo es el resultado adverso.
+
+| Nombre | Fórmula | Qué mide |
+| --- | --- | --- |
+| Paridad demográfica | `P(Ŷ=1 \| A=a)` igual para todo `a` | Si todos los grupos se rechazan a la misma tasa. **Ignora** si incumplen igual |
+| Razón de impacto dispar | `min_a / max_a` de lo anterior | La guía estadounidense señala por debajo de 0,80 |
+| Equidad de oportunidad | `P(Ŷ=1 \| Y=1, A=a)` igual para todo `a` | De los que sí incumplieron, cuántos se atraparon |
+| Tasa de falsos positivos | `P(Ŷ=1 \| Y=0, A=a)` | **De los que habrían pagado, cuántos se rechazaron por error** |
+
+### Brechas, sobre grupos de al menos 500 filas
+
+| Atributo | Paridad (dif.) | Razón | Equidad de oportunidad | **Brecha FPR** | Brecha de tasa base |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| SEX | 0,0520 | 0,8759 | 0,0278 | 0,0406 | 0,0339 |
+| **EDUCATION** | **0,1198** | **0,7364** ⚠ | 0,0668 | **0,1029** | 0,0592 |
+| MARRIAGE | 0,0106 | 0,9730 | 0,0043 | 0,0009 | 0,0254 |
+| **AGE** | **0,0991** | **0,7796** ⚠ | 0,0499 | **0,0871** | 0,0505 |
+
+Grupos excluidos por tamaño (n < 500): `EDUCATION` 0, 4, 5, 6; `MARRIAGE` 0, 3. Se listan con
+su tamaño en la evidencia; lo que no pueden es anclar un máximo.
+
+### La disparidad no se explica solo por la tasa base
+
+**Para los tres atributos con brecha, la diferencia de rechazo es cerca del doble de la
+diferencia de tasa base.** Si un grupo incumple más, rechazarlo más no es sesgo — pero aquí el
+rechazo crece más rápido que el incumplimiento.
+
+La columna que aísla el trato desigual es la **brecha de FPR**: mide diferencias **entre
+clientes que habrían pagado**, donde no hay diferencia de mérito que justifique nada.
+Traducida a personas:
+
+| Grupo | Pagadores | Rechazados por error | Con el FPR de la referencia | **Exceso** |
+| --- | ---: | ---: | ---: | ---: |
+| EDUCATION 2 | 10.701 | 3.312 | 2.678 | **+633** |
+| EDUCATION 3 | 3.680 | 1.300 | 921 | **+379** |
+| AGE 21-29 | 7.421 | 2.349 | 1.959 | **+390** |
+| SEX 1 | 9.015 | 2.874 | 2.508 | **+366** |
+| AGE 50+ | 2.002 | 703 | 529 | **+174** |
+
+`MARRIAGE` es la excepción y merece decirse: su brecha de rechazo (0,0106) es **menor** que su
+brecha de tasa base (0,0254), y su brecha de FPR es prácticamente nula (0,0009).
+
+### Quitar las variables protegidas no arregla el problema, y es casi gratis
+
+| Modelo | PR-AUC | Columnas |
+| --- | ---: | ---: |
+| Completo | 0,5640 ± 0,0075 | 110 |
+| Ciego a SEX, EDUCATION, MARRIAGE, AGE | 0,5619 ± 0,0093 | 99 |
+| **Diferencia** | **−0,0020** *(dentro del ruido)* | −11 |
+
+| Brecha FPR | Completo | Ciego | Reducción |
+| --- | ---: | ---: | ---: |
+| SEX | 0,0406 | 0,0369 | −9,1% |
+| EDUCATION | 0,1029 | 0,0908 | −11,8% |
+| AGE | 0,0871 | 0,0606 | −30,4% |
+| MARRIAGE | 0,0009 | 0,0188 | **empeora** |
+
+**La equidad por omisión no funciona aquí.** Cegar el modelo cuesta esencialmente nada en
+desempeño y elimina entre el 9% y el 30% de la brecha: **la mayor parte sobrevive**, porque
+las features de comportamiento están correlacionadas con las demográficas y borrar la
+etiqueta no borra la información. En `MARRIAGE` la brecha incluso empeora.
+
+### Qué NO cubre esta medición
+
+Interseccionalidad (combinaciones como sexo × edad), calibración por grupo, y cualquier
+noción de equidad individual. Tampoco cubre el efecto de umbrales distintos: estas cifras son
+específicas de 0,160.
+
+---
+
 ## 7 · Limitaciones conocidas
 
 ### 7.1 · No hay validación fuera de tiempo — y un despliegue real la exigiría
@@ -290,12 +407,16 @@ un oráculo**: con el umbral de 0,160, el 59% de los clientes rechazados habría
   desconoce.
 - **No debe usarse para inferir causalidad.** SHAP atribuye la predicción del modelo, no el
   efecto de cambiar una variable en el mundo.
-- **No debe usarse sobre variables protegidas sin un análisis de equidad que este proyecto
-  todavía no ha hecho.** `SEX`, `EDUCATION`, `MARRIAGE` y `AGE` están entre las entradas, y
-  **no se ha medido si el modelo produce tasas de rechazo dispares entre esos grupos**. Que
-  la demografía pese solo el 4,5% de la atribución no es prueba de ausencia de sesgo: un peso
-  pequeño sobre una población grande puede seguir siendo un trato desigual. Está fuera de lo
-  medido hasta hoy.
+- **No debe usarse para decidir sobre personas sin asumir explícitamente la disparidad
+  medida en la sección 6 bis.** Ya **no** es cierto que la equidad esté sin medir: está
+  medida, y el resultado es que la razón de impacto dispar cae por debajo de 0,80 para
+  `EDUCATION` y `AGE`, con hasta 10,3 puntos porcentuales de diferencia en la tasa de rechazo
+  erróneo entre clientes que habrían pagado. Este proyecto **cuantificó** la disparidad y
+  **no la mitigó**: mitigar es una decisión con alternativas y costos que no se ha tomado.
+  Desplegar el modelo es aceptar esas cifras, no ignorarlas.
+- **No debe presentarse como equitativo por no mirar las variables protegidas.** Está medido
+  que cegarlo elimina solo entre el 9% y el 30% de la brecha: la mayor parte viaja por
+  proxies en las features de comportamiento.
 
 ---
 

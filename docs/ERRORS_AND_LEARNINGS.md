@@ -137,3 +137,82 @@ entrada corregida se corrige con una entrada nueva que referencia a la anterior.
   Se conecta con la entrada 001 por el mismo lado: allí el síntoma era **la ausencia de un
   check**, acá es **la ausencia de una validación**. Los dos fallos son invisibles mirando
   lo que hay, y los dos se detectan preguntando explícitamente por lo que debería estar.
+
+---
+
+### 003 — `id()` no es una prueba de identidad: el intérprete recicla direcciones
+
+- **Fecha:** 2026-08-26
+- **Fase:** 02-modeling
+
+- **Síntoma:** un test que afirmaba que **cada fold recibe una instancia nueva del
+  preprocesador** pasaba en verde sin verificar nada. Estuvo tres turnos en verde. Cuando
+  por fin falló, lo hizo con un mensaje que a primera vista parece delatar un bug del
+  código bajo prueba:
+
+      assert 3 == 4
+       +  where 3 = len({1556906293712, 1556906294480, 1556906512784})
+       +  and   4 = len([1556906294480, 1556906512784, 1556906293712, 1556906294480])
+
+  Cuatro folds, cuatro instancias, **tres direcciones distintas**: una aparece dos veces.
+  Leído sin más, dice "el preprocesador se está reutilizando entre folds", que es
+  exactamente el modo de fuga que el test existe para impedir. No era eso.
+
+- **Causa raíz:** en CPython, `id()` devuelve **la dirección de memoria del objeto**, y esa
+  dirección **se reutiliza en cuanto el objeto anterior es recolectado**. El contrato de
+  `id()` es que dos objetos *vivos a la vez* tienen identificadores distintos; no dice nada
+  sobre objetos que no coexisten.
+
+  Los preprocesadores de este test viven exactamente lo que dura su fold y mueren al
+  terminarlo. Nunca coexisten. De modo que el test comparaba direcciones que el intérprete
+  había reciclado, y su resultado dependía del momento de asignación de memoria y no de
+  ninguna propiedad del código.
+
+  Lo que hace el fallo especialmente traicionero es la dirección del error: **el test es
+  laxo, no estricto**. Un test frágil que falla de más molesta y se arregla. Éste **pasaba**
+  cuando la asignación no reciclaba, que es la mayoría de las veces, y por eso pareció
+  correcto durante tres turnos.
+
+- **Diagnóstico:** no se dedujo leyendo el código del test sino **midiendo el
+  comportamiento de `id()`** con seis objetos de vida corta:
+
+      class T: pass
+      ids = []
+      for _ in range(6):
+          t = T(); ids.append(id(t)); del t
+      # ids -> las seis direcciones son la misma
+
+  **Seis objetos, una sola dirección distinta.** Con esa medición el mensaje del fallo deja
+  de leerse como un bug del preprocesador y pasa a leerse como lo que era.
+
+  Se descartó por el camino la hipótesis de que la fábrica estuviera devolviendo un objeto
+  reutilizado: la fábrica construye una instancia nueva en cada llamada, y el contador de
+  llamadas —que es una variable ordinaria y no una dirección— seguía marcando cuatro.
+
+- **Solución:** identificar cada instancia por un **número de serie asignado en la
+  construcción**, entregado por el diario de la prueba, en vez de por su dirección. El
+  número de serie sigue siendo único mientras el diario viva, aunque el objeto ya no exista.
+  El test comprueba además que se construyeron tantas instancias como ajustes se
+  registraron. Verificado estable en tres corridas seguidas.
+
+- **Prevención:** el arreglo sube la garantía de **nivel 3** —*"acordarse de que `id()` es
+  frágil"*— a **nivel 1** dentro de este test: un contador asignado en construcción no puede
+  reciclarse, así que el modo de falla desaparece en vez de quedar recordado.
+
+  Lo que **no** hay es nada que impida escribir el mismo error en otro test. Un `grep` de
+  `id(` en `tests/` es la comprobación barata, y no está automatizada; subirla a nivel 1
+  requeriría una regla de lint propia, y **esa decisión no está tomada**.
+
+- **Aprendizaje:** **cualquier prueba de identidad basada en `id()` sobre objetos de vida
+  corta es una prueba que no prueba nada.** La regla generalizable: `id()` responde
+  "¿son el mismo objeto?" solo entre objetos que están vivos simultáneamente. En cuanto la
+  vida de los objetos no se solapa —un bucle que crea, usa y descarta, que es la forma
+  exacta de una validación cruzada— la respuesta se vuelve una función del asignador de
+  memoria. Para identidad a lo largo del tiempo hace falta algo que el objeto **lleve
+  consigo**: un número de serie, un UUID, un contador.
+
+  Se conecta con las entradas 001 y 002 por el mismo lado, y esta vez desde el otro extremo.
+  Allí el problema era una **ausencia** que se parecía a un éxito; aquí es una **afirmación
+  vacía** que se parece a una verificación. Los tres fallos comparten que **el verde no
+  significaba lo que parecía significar**, y los tres se detectaron preguntando
+  explícitamente qué estaba comprobando el verde.
