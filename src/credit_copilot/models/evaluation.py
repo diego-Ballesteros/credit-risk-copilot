@@ -88,6 +88,10 @@ class CrossValidationResult:
             indexed by a 1-based fold number.
         fold_positive_rates: Share of the positive class in each validation fold. Present so
             that "the split was stratified" is a number the reader can check.
+        fold_n_features: How many matrix columns reached the classifier in each fold. It is
+            a tuple rather than a single number because a fold whose training part never saw
+            a rare one-hot level produces no column for it, so the width can legitimately
+            differ by one or two between folds.
     """
 
     estimator_name: str
@@ -97,6 +101,21 @@ class CrossValidationResult:
     random_state: int
     fold_metrics: pd.DataFrame
     fold_positive_rates: tuple[float, ...]
+    fold_n_features: tuple[int, ...]
+
+    @property
+    def n_features(self) -> int:
+        """Widest matrix the classifier was handed across the folds.
+
+        The maximum rather than the first fold's value, so that a comparison between models
+        never understates what one of them had available. When the arms of an experiment
+        differ in the columns they see, this is its independent variable; `fold_n_features`
+        holds the detail when the folds disagree.
+
+        Returns:
+            The largest per-fold feature count.
+        """
+        return max(self.fold_n_features)
 
     @property
     def means(self) -> Mapping[str, float]:
@@ -188,6 +207,27 @@ def _positive_class_column(classes: Sequence[Any]) -> int:
     return labels.index(POSITIVE_LABEL)
 
 
+def terminal_estimator(estimator: BaseEstimator) -> BaseEstimator:
+    """Unwrap nested pipelines down to the object that actually classifies.
+
+    The estimator handed to `cross_validate_estimator` is usually a bare classifier, but the
+    hypothesis contrast passes a small pipeline that selects a column group before the model.
+    Attributes like `n_features_in_` mean different things at the two levels: on the wrapper
+    it counts the columns that went *into* the selection, on the classifier the ones that
+    came *out*. Only the second answers "how many features did this model use".
+
+    Args:
+        estimator: A fitted estimator, possibly a pipeline of pipelines.
+
+    Returns:
+        The innermost non-pipeline estimator.
+    """
+    current = estimator
+    while isinstance(current, Pipeline):
+        current = current.steps[-1][1]
+    return current
+
+
 def build_fold_pipeline(
     estimator: BaseEstimator,
     preprocessor_factory: PreprocessorFactory = build_preprocessor,
@@ -267,6 +307,7 @@ def cross_validate_estimator(
 
     rows: list[Mapping[str, float]] = []
     fold_positive_rates: list[float] = []
+    fold_n_features: list[int] = []
 
     for train_index, validation_index in splitter.split(features, target):
         train_features = features.iloc[train_index]
@@ -277,23 +318,26 @@ def cross_validate_estimator(
         pipeline = build_fold_pipeline(estimator, preprocessor_factory)
         pipeline.fit(train_features, train_target)
 
-        column = _positive_class_column(pipeline.named_steps[MODEL_STEP].classes_)
+        classifier = terminal_estimator(pipeline.named_steps[MODEL_STEP])
+        column = _positive_class_column(classifier.classes_)
         scores = pipeline.predict_proba(validation_features)[:, column]
 
         rows.append(compute_metrics(validation_target.to_numpy(), scores))
         fold_positive_rates.append(float(validation_target.mean()))
+        fold_n_features.append(int(classifier.n_features_in_))
 
     fold_metrics = pd.DataFrame(rows, columns=list(REPORTED_METRIC_NAMES))
     fold_metrics.index = pd.Index(range(1, n_splits + 1), name="fold")
 
     return CrossValidationResult(
-        estimator_name=type(estimator).__name__,
+        estimator_name=type(terminal_estimator(estimator)).__name__,
         n_splits=n_splits,
         n_samples=len(target),
         positive_rate=float(target.mean()),
         random_state=seed,
         fold_metrics=fold_metrics,
         fold_positive_rates=tuple(fold_positive_rates),
+        fold_n_features=tuple(fold_n_features),
     )
 
 
@@ -366,6 +410,8 @@ def evaluate_and_log(
                 "random_state": str(result.random_state),
                 "n_samples": str(result.n_samples),
                 "n_raw_columns": str(features.shape[1]),
+                "n_model_features": str(result.n_features),
+                "n_model_features_per_fold": str(list(result.fold_n_features)),
                 "preprocessor_fitted": "once per fold, on the training part only",
             }
         )

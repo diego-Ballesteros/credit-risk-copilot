@@ -30,10 +30,10 @@ import sys
 from typing import Final
 
 import pandas as pd
-from sklearn.linear_model import LogisticRegression
 
 from credit_copilot.config import settings
 from credit_copilot.data.loader import load_dataset
+from credit_copilot.models.estimators import build_logistic_regression
 from credit_copilot.models.evaluation import (
     DEFAULT_N_SPLITS,
     evaluate_and_log,
@@ -47,9 +47,6 @@ from credit_copilot.models.tracking import (
     MLflowConfigurationError,
     ensure_experiment,
 )
-
-LOGISTIC_MAX_ITER: Final[int] = 2000
-"""Same iteration budget as the real baseline. The pipeline under test must be identical."""
 
 ROC_AUC_TOLERANCE: Final[float] = 0.02
 """Largest accepted distance between the mean ROC-AUC and 0.5.
@@ -172,12 +169,7 @@ def main() -> int:
     print("amount and none of them counts as evidence until the leak is found.\n")
 
     result, run_id = evaluate_and_log(
-        LogisticRegression(
-            penalty="l2",
-            class_weight="balanced",
-            max_iter=LOGISTIC_MAX_ITER,
-            random_state=settings.random_state,
-        ),
+        build_logistic_regression(),
         features,
         permuted_target,
         run_name="leakage-check-shuffled-target",

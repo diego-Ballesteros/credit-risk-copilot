@@ -11,6 +11,7 @@ matrix was fitted on the full dataset and evaluating on it would be the leakage 
 subpackage is built to prevent.
 """
 
+from credit_copilot.models.estimators import build_logistic_regression
 from credit_copilot.models.evaluation import (
     CrossValidationResult,
     EvaluationInputError,
@@ -21,6 +22,14 @@ from credit_copilot.models.evaluation import (
     format_fold_table,
     null_reference,
     split_features_and_target,
+)
+from credit_copilot.models.feature_groups import (
+    ALL_SOURCE_COLUMNS,
+    BEHAVIOURAL_SOURCE_COLUMNS,
+    DEMOGRAPHIC_SOURCE_COLUMNS,
+    FeatureGroupError,
+    SelectFeatureGroup,
+    group_columns_by_source,
 )
 from credit_copilot.models.metrics import (
     DECISION_METRIC,
@@ -44,17 +53,23 @@ from credit_copilot.models.tracking import (
 )
 
 __all__ = [
+    "ALL_SOURCE_COLUMNS",
+    "BEHAVIOURAL_SOURCE_COLUMNS",
     "DECISION_METRIC",
+    "DEMOGRAPHIC_SOURCE_COLUMNS",
     "METRIC_NAMES",
     "REPORTED_METRIC_NAMES",
     "CrossValidationResult",
     "EvaluationInputError",
     "ExperimentContext",
+    "FeatureGroupError",
     "MLflowConfigurationError",
     "MetricInputError",
+    "SelectFeatureGroup",
     "accuracy_at_threshold",
     "brier_score",
     "build_fold_pipeline",
+    "build_logistic_regression",
     "compute_metrics",
     "configure_mlflow",
     "cross_validate_estimator",
@@ -63,6 +78,7 @@ __all__ = [
     "format_comparison_table",
     "format_fold_table",
     "gini",
+    "group_columns_by_source",
     "ks_statistic",
     "null_reference",
     "pr_auc",

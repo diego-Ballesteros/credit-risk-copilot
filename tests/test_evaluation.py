@@ -35,6 +35,7 @@ from sklearn.pipeline import Pipeline
 
 from credit_copilot.config import RANDOM_STATE
 from credit_copilot.data import schema
+from credit_copilot.models.estimators import build_logistic_regression
 from credit_copilot.models.evaluation import (
     DEFAULT_N_SPLITS,
     MODEL_STEP,
@@ -333,9 +334,7 @@ def test_stratification_holds_even_when_the_target_arrives_sorted() -> None:
 def test_the_same_seed_produces_identical_metrics() -> None:
     frame = synthetic_frame(240)
     features, target = split_features_and_target(frame)
-    estimator = LogisticRegression(
-        penalty="l2", class_weight="balanced", max_iter=2000, random_state=RANDOM_STATE
-    )
+    estimator = build_logistic_regression()
 
     first = cross_validate_estimator(estimator, features, target, random_state=RANDOM_STATE)
     second = cross_validate_estimator(estimator, features, target, random_state=RANDOM_STATE)
@@ -350,9 +349,7 @@ def test_a_different_seed_moves_the_metrics() -> None:
     # would be passing because the routine ignores its seed, which is a different fact.
     frame = synthetic_frame(240)
     features, target = split_features_and_target(frame)
-    estimator = LogisticRegression(
-        penalty="l2", class_weight="balanced", max_iter=2000, random_state=RANDOM_STATE
-    )
+    estimator = build_logistic_regression()
 
     first = cross_validate_estimator(estimator, features, target, random_state=RANDOM_STATE)
     other = cross_validate_estimator(estimator, features, target, random_state=RANDOM_STATE + 1)

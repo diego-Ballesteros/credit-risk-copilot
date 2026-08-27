@@ -33,10 +33,10 @@ stops, because the metrics look like evidence and are not.
 import sys
 
 from sklearn.dummy import DummyClassifier
-from sklearn.linear_model import LogisticRegression
 
 from credit_copilot.config import settings
 from credit_copilot.data.loader import load_dataset
+from credit_copilot.models.estimators import build_logistic_regression
 from credit_copilot.models.evaluation import (
     DEFAULT_N_SPLITS,
     CrossValidationResult,
@@ -59,11 +59,6 @@ from credit_copilot.models.tracking import (
     ensure_experiment,
 )
 
-LOGISTIC_MAX_ITER = 2000
-"""Iteration budget for lbfgs. High enough that the solver converges rather than being
-stopped mid-descent, which would report the metric of an unfinished model as if it were
-the metric of the model."""
-
 RULE = "=" * 92
 
 
@@ -83,12 +78,7 @@ def _build_baselines() -> dict[str, tuple[object, str]]:
             "orders by the class prior alone - the floor of a ranking metric",
         ),
         "logistic-l2-balanced": (
-            LogisticRegression(
-                penalty="l2",
-                class_weight="balanced",
-                max_iter=LOGISTIC_MAX_ITER,
-                random_state=settings.random_state,
-            ),
+            build_logistic_regression(),
             "the cheapest real model - what any complex model has to beat",
         ),
     }
