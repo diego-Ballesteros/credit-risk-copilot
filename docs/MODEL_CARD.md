@@ -313,7 +313,7 @@ brecha de tasa base (0,0254), y su brecha de FPR es prácticamente nula (0,0009)
 
 | Brecha FPR | Completo | Ciego | Reducción |
 | --- | ---: | ---: | ---: |
-| SEX | 0,0406 | 0,0369 | −9,1% |
+| SEX | 0,0406 | 0,0369 | −9,2% |
 | EDUCATION | 0,1029 | 0,0908 | −11,8% |
 | AGE | 0,0871 | 0,0606 | −30,4% |
 | MARRIAGE | 0,0009 | 0,0188 | **empeora** |

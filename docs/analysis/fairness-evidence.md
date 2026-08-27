@@ -135,8 +135,9 @@ Umbral de significancia práctica del proyecto: 0,02. La diferencia queda **dent
 | MARRIAGE | 0,0106 | 0,0080 | 0,0009 | **0,0188** | 0,0043 | **0,0184** |
 | AGE | 0,0991 | 0,0712 | 0,0871 | 0,0606 | 0,0499 | **0,0554** |
 
-Reducción de la brecha de FPR al cegar el modelo: SEX **−9,1%**, EDUCATION **−11,8%**,
-AGE **−30,4%**, MARRIAGE **+1.989%** (de 0,0009 a 0,0188; la brecha del modelo completo era
+Reducción de la brecha de FPR al cegar el modelo, calculada sobre los valores completos y
+no sobre los redondeados de la tabla: SEX **−9,18%**, EDUCATION **−11,75%**, AGE **−30,44%**,
+MARRIAGE **+1.936,69%** (de 0,000924 a 0,018819; la brecha del modelo completo era
 prácticamente nula, así que el cociente está dominado por un denominador diminuto).
 
 ---
