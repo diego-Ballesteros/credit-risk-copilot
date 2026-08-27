@@ -30,8 +30,11 @@ boosting, from a library already installed, with no native dependency to resolve
 substitution is recorded in the report of the turn that made it, not decided here.
 """
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Final
 
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 
@@ -57,12 +60,24 @@ so the migration moved the API and not the model.
 
 
 def build_logistic_regression() -> LogisticRegression:
-    """Build the project's canonical logistic regression: L2, balanced class weights.
+    """Build the project's canonical logistic regression: L2, no class reweighting.
 
-    `class_weight="balanced"` reweights each class by the inverse of its frequency, so the
-    22% minority stops being something the loss can afford to ignore. It changes what the
-    model optimises, not what it is measured against: the metrics of ADR-0002 are computed
-    on the untouched validation fold either way.
+    **`class_weight="balanced"` was removed from this default, and the evidence is entry
+    005 of `docs/EVALUATION.md`.** Measured on the same folds and the same seed, reweighting
+    by inverse class frequency bought **nothing** in ranking - PR-AUC moved by -0.0009,
+    inside the fold spread - and cost **+0.0404 in Brier score**, which is twenty times the
+    fold-to-fold spread of that metric. The mechanism is direct: reweighting the positive
+    class makes the model predict probabilities above the rate the real population has, and
+    Brier measures exactly that distance. ADR-0002 keeps Brier because the declared business
+    use needs a probability, so a default that damages it is the wrong default.
+
+    **What this changes about the numbers already recorded.** Entries 001 and 003 of
+    `docs/EVALUATION.md` - the phase-2 baselines and the main-hypothesis contrast - were
+    measured with the previous default and are **not** invalidated: every arm inside each of
+    those comparisons carried the same setting, so each comparison stays internally
+    consistent. What they are is measured on a configuration this project no longer ships.
+    Re-running either script now will produce different absolute numbers, and that is the
+    expected consequence of the change rather than a regression.
 
     Returns:
         An unfitted estimator. Every call returns an equivalent, independent object, so two
@@ -70,7 +85,6 @@ def build_logistic_regression() -> LogisticRegression:
     """
     return LogisticRegression(
         l1_ratio=LOGISTIC_L1_RATIO,
-        class_weight="balanced",
         max_iter=LOGISTIC_MAX_ITER,
         random_state=settings.random_state,
     )
@@ -149,3 +163,135 @@ def build_hist_gradient_boosting(
         early_stopping=False,
         random_state=settings.random_state,
     )
+
+
+# ---------------------------------------------------------------------------
+# The production model - one definition, so four scripts cannot disagree
+# ---------------------------------------------------------------------------
+
+PRODUCTION_FOREST_PARAMS: Final[Mapping[str, object]] = MappingProxyType(
+    {
+        "n_estimators": 300,
+        "max_depth": 10,
+        "min_samples_leaf": 18,
+        "max_features": 0.3,
+    }
+)
+"""Hyperparameters of the production forest: the final study of entry 006.
+
+**These are the tuned values, and the honest caveat is that tuning bought almost nothing.**
+Entry 006 measured the gain at +0.0028 in PR-AUC against a fold spread of 0.0080 - inside
+the noise, and well below the 0.02 threshold. Choosing the tuned configuration over the
+untuned default is therefore choosing between two options the data cannot separate, and the
+untuned `build_random_forest(class_weight=None)` would be an equally defensible production
+model.
+
+The reason the tuned set is used anyway is the one dimension where the data *did* speak:
+`max_features=0.3` was chosen by all five outer folds and by the final study, while the
+untuned default uses `"sqrt"` - about 0.1 of 110 columns. That parameter is constrained by
+the evidence; the other three are not, and entry 006 records that the five folds disagreed
+about every one of them.
+
+**No `class_weight`.** Entry 005 measured that reweighting costs 0.0404 of Brier and buys
+no ranking, and this model exists to be calibrated.
+"""
+
+PRODUCTION_CALIBRATION_CV: Final[int] = 3
+"""Inner folds `CalibratedClassifierCV` uses to fit the calibration map.
+
+Three rather than five keeps the cost of the calibrated model at three forest fits instead
+of five, and the calibrator is a one- or two-parameter map that does not need a large
+sample to place. The split is over the *training* data only, wherever the calibrated model
+is fitted, which is what keeps the calibration curve honest.
+"""
+
+
+def build_production_forest() -> RandomForestClassifier:
+    """Build the uncalibrated ranking model: the forest the project decided on.
+
+    This is the object SHAP explains. Calibration is applied on top of it and is a monotone
+    transform of the score, so it moves the probabilities without moving the order - which
+    is why an explanation of this model is also an explanation of the calibrated one.
+
+    Returns:
+        An unfitted estimator.
+    """
+    return RandomForestClassifier(
+        class_weight=None,
+        n_jobs=-1,
+        random_state=settings.random_state,
+        **PRODUCTION_FOREST_PARAMS,
+    )
+
+
+def build_calibrated_forest(
+    method: str, cv: int = PRODUCTION_CALIBRATION_CV
+) -> CalibratedClassifierCV:
+    """Wrap the production forest in a calibration map fitted by internal cross-validation.
+
+    **`ensemble=False` is a deliberate choice with two consequences that both matter here.**
+    With the default `ensemble=True`, scikit-learn keeps one (model, calibrator) pair per
+    internal fold and averages their predictions, so the deployed object holds three forests
+    and the thing SHAP would have to explain is an average of three different models. With
+    `ensemble=False` the calibrator is fitted on out-of-fold predictions and then **one**
+    forest is refitted on all the training data, so the deployed object holds a single
+    ranking function - explainable, and cheaper to serve.
+
+    Wherever this estimator is handed to `cross_validate_estimator`, its internal splitting
+    happens strictly inside whatever data it was given, which in a fold is that fold's
+    training part. The calibration map therefore never sees the rows it is scored on.
+
+    Args:
+        method: `"sigmoid"` for Platt scaling, a two-parameter logistic map, or
+            `"isotonic"` for a free monotone step function.
+        cv: Internal folds used to produce the out-of-fold predictions the map is fitted on.
+
+    Returns:
+        An unfitted estimator.
+    """
+    return CalibratedClassifierCV(
+        estimator=build_production_forest(),
+        method=method,
+        cv=cv,
+        ensemble=False,
+    )
+
+
+PRODUCTION_CALIBRATION_METHOD: Final[str] = "sigmoid"
+"""Calibration map the production model carries.
+
+**The measurement says calibration was not needed, and this constant records that tension
+rather than hiding it.** Entry 007 of `docs/EVALUATION.md` compared both methods against
+the raw forest on out-of-fold probabilities: the **uncalibrated** forest scored the best
+Brier of the three (0.133228, against 0.134009 for sigmoid and 0.133551 for isotonic) and
+had the smallest gap in every decile of predicted probability, worst bin 0.0106 against
+0.0481 and 0.0157. A forest of 300 trees averaging leaf frequencies is already producing a
+probability, not a vote share, and there was little left to correct.
+
+Sigmoid is kept because the cost of keeping it is measured and negligible - **+0.0008 in
+Brier, well inside the fold spread of 0.002, and exactly 0.0000 in PR-AUC** - and because a
+two-parameter map is cheap insurance if the score distribution ever shifts. Dropping the
+calibration step is a defensible alternative and the evidence for it is in entry 007.
+
+**Isotonic is not used, and the reason is a real finding rather than a preference.** It cost
+0.0133 of PR-AUC. A monotone map cannot reorder anything, but isotonic regression is only
+*non-decreasing*: it collapses ranges of score into a single constant, which creates ties,
+and ties are what precision-at-top-k and average precision are computed from. Sigmoid is
+strictly increasing and left every ranking metric bit-identical.
+"""
+
+
+PRODUCTION_OPERATING_THRESHOLD: Final[float] = 0.160
+"""Probability at or above which the production model recommends refusing a client.
+
+**Chosen from a cost matrix, not from the model.** Entry 008 of `docs/EVALUATION.md` swept
+201 thresholds against out-of-fold probabilities and minimised `5*FN + FP`, under the
+project's stated assumption that a false negative - lending to someone who defaults - costs
+five times a false positive. At this cut, on the 30,000 clients of the dataset: 11,635
+refusals, 4,769 defaulters caught of 6,636, and 6,866 paying clients turned away.
+
+**It is an assumption-heavy number and the sensitivity is the headline.** At 3:1 the cut is
+0.220 and refuses 7,768 clients; at 10:1 it is 0.105 and refuses 22,329. Moving the ratio
+across that range moves 48.5% of the book. Anything downstream that treats this constant as
+a property of the model rather than of the cost assumption is reading it wrong.
+"""

@@ -55,5 +55,6 @@ en el mismo orden que la CI.
 | `docs/GIT_STRATEGY.md` | Modelo de ramas, commits y PRs |
 | `docs/DATA_DICTIONARY.md` | Contrato de datos: columnas, tipos, rangos y discrepancias con la fuente |
 | `docs/EVALUATION.md` | Registro de mediciones y baselines |
+| `docs/MODEL_CARD.md` | Qué hace el modelo productivo, con qué datos, su umbral operativo, sus limitaciones y para qué **no** debe usarse |
 | `docs/ERRORS_AND_LEARNINGS.md` | Registro de errores y aprendizajes |
 | `docs/adr/` | Architecture Decision Records |

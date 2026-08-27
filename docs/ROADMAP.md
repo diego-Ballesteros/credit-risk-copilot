@@ -376,12 +376,29 @@ Un *holdout* que nunca vio el entrenamiento se convierte en un flujo de peticion
 | Datos | pandas, pyarrow | Parquet para datos procesados |
 | Visualización | matplotlib | Solo para los notebooks. **Dependencia de desarrollo, no de runtime**: ni la API ni el pipeline dibujan nada |
 | Notebooks | nbconvert | Ejecuta el notebook completo con un kernel limpio. Existe para que *"corre de arriba a abajo"* sea **un comando reproducible y no una afirmación manual**. También dependencia de desarrollo |
-| ML | scikit-learn, LightGBM | Pipeline + ColumnTransformer |
+| ML | scikit-learn | Pipeline + ColumnTransformer. El boosting es `HistGradientBoostingClassifier` — ver la nota de abajo |
 | Tuning | Optuna | Con pruning |
 | Explicabilidad | SHAP | TreeExplainer |
 | Balanceo | imbalanced-learn | Comparar contra `class_weight` |
 | Tracking | **MLflow + DagsHub** | Registry incluido |
 | Orquestación GenAI | **LangGraph** | Estado tipado + aristas condicionales |
+
+> **Sustitución de LightGBM, 2026-08-26.** LightGBM estaba en el stack y **no es utilizable
+> en la máquina de desarrollo**. El paquete instala y su wheel trae `lib_lightgbm.dll`, pero
+> cargarla requiere el runtime de Microsoft Visual C++, y este sistema solo tiene las
+> variantes `*_clr0400` que empaqueta .NET. El fallo aparece al **importar**, no al
+> instalar: `uv add lightgbm` reporta éxito y `import lightgbm` lanza `FileNotFoundError`.
+>
+> Se sustituye por **`HistGradientBoostingClassifier`** de scikit-learn: la misma familia de
+> boosting por histogramas, ya instalada, sin dependencia nativa que resolver. La medición
+> está en la entrada 004 de `docs/EVALUATION.md`, y esa entrada deja explícito que **no dice
+> nada sobre LightGBM**.
+>
+> Revertirlo es instalar el runtime (`winget install Microsoft.VCRedist.2015+.x64`) y
+> cambiar el constructor en `models/estimators`. Se deja sin revertir porque el boosting
+> quedó por debajo del umbral de significancia práctica frente a la logística (+0,0163
+> contra 0,02) y por debajo del random forest, así que la sustitución no cambió qué modelo
+> se eligió.
 | Vector store | ChromaDB | Persistente en disco |
 | Embeddings | sentence-transformers | Modelo multilingüe (corpus en español) |
 | LLM | Anthropic API | `claude-haiku-4-5` para tools, modelo mayor para síntesis |
@@ -577,7 +594,7 @@ develop      ●──●──●──●──●──●──●──●�
 
 #### Día 6 — Modelos avanzados y tuning
 
-- [ ] Random Forest, Gradient Boosting, LightGBM
+- [ ] Random Forest, Gradient Boosting (`HistGradientBoostingClassifier`; LightGBM sustituido, ver la nota del stack)
 - [ ] Estrategias de desbalance: `class_weight` vs. SMOTE vs. sin tratamiento → **comparar, no asumir**
 - [ ] Tuning con Optuna (nested CV para evitar sesgo optimista)
 - [ ] Tabla comparativa de todos los modelos con intervalos de confianza

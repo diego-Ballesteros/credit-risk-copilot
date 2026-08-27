@@ -480,3 +480,177 @@ elimina la variación que viene del corte y deja la que viene de las columnas.
   - **Límite explícito:** 30 trials en cuatro dimensiones no agotan el espacio. La
     afirmación defendible es "no se encontró ganancia con este presupuesto", no "no existe
     ganancia".
+
+### 007 — Calibración: ¿sirve calibrar el random forest?
+
+- **Fecha:** 2026-08-26
+- **Fase:** 02-modeling
+- **Objeto evaluado:** `build_production_forest()` —random forest tuneado, `class_weight=None`—
+  crudo y envuelto en dos mapas de calibración. Lo único que cambia es el mapa.
+- **Datos:** UCI 350, 30.000 filas, prevalencia 0,221200.
+- **Protocolo:** `StratifiedKFold(5, shuffle=True, random_state=42)`. El calibrador se ajusta
+  **dentro** de cada fold, sobre 3 particiones internas de las filas de entrenamiento de ese
+  fold, con `ensemble=False`. Ninguna fila participa en el ajuste del mapa que después la
+  puntúa. La curva de fiabilidad se dibuja con probabilidades **fuera de fold**, por la misma
+  razón: una curva dibujada en muestra se apoya en la diagonal por un motivo que no tiene que
+  ver con que el modelo esté bien calibrado.
+
+**Métricas — media ± desviación estándar entre los 5 folds**
+
+| Métrica | Sin calibrar (referencia) | Sigmoide (Platt) | Isotónica |
+| --- | --- | --- | --- |
+| PR-AUC | **0,5640 ± 0,0075** | **0,5640 ± 0,0075** | 0,5507 ± 0,0078 |
+| ROC-AUC | 0,7874 ± 0,0083 | 0,7874 ± 0,0083 | 0,7868 ± 0,0076 |
+| KS | 0,4388 ± 0,0197 | 0,4388 ± 0,0197 | 0,4338 ± 0,0170 |
+| Gini | 0,5748 ± 0,0166 | 0,5748 ± 0,0166 | 0,5736 ± 0,0152 |
+| **Brier** (menor es mejor) | **0,133228 ± 0,0021** | 0,134009 ± 0,0022 | 0,133551 ± 0,0019 |
+| precision@top-10% | 0,7070 ± 0,0177 | 0,7070 ± 0,0177 | 0,7055 ± 0,0169 |
+| precision@top-5% | 0,7713 ± 0,0223 | 0,7713 ± 0,0223 | 0,7665 ± 0,0126 |
+
+- **Baseline:** el **forest sin calibrar**, sobre los mismos folds. Es el baseline correcto
+  porque la pregunta es qué añade calibrar, no qué añade el forest.
+
+**Fiabilidad fuera de fold, 10 bins por cuantiles — peor brecha absoluta en cualquier bin**
+
+| Arm | Peor \|brecha\| | Media predicha | Prevalencia | Sesgo |
+| --- | ---: | ---: | ---: | ---: |
+| **Sin calibrar** | **0,0106** | 0,221243 | 0,221200 | +0,000043 |
+| Sigmoide | 0,0481 | 0,221889 | 0,221200 | +0,000689 |
+| Isotónica | 0,0157 | 0,222037 | 0,221200 | +0,000837 |
+
+- **Resultado:** **la calibración no ayudó.** El forest crudo obtuvo el mejor Brier de los
+  tres y la menor brecha en cada decil. Ninguna de las dos ganancias esperadas apareció.
+- **Reproducción:** `uv run python scripts/run_calibration.py`. Runs etiquetados
+  `run_type=calibration`: `12b5fce218db42e5a5d17422b8398fa7` (sin calibrar),
+  `346d56bae88642c0932cd3cf9ea51677` (sigmoide), `b773e8f6119d42f788433b2a0c7a5a2b`
+  (isotónica), y `efbfafdbf5a3462ea6fa261f56f43646` con la curva de fiabilidad como
+  artefacto.
+- **Interpretación:**
+  - **El forest ya estaba calibrado, y hay un mecanismo detrás.** 300 árboles promediando
+    frecuencias de hoja producen una probabilidad, no una proporción de votos. La media
+    predicha coincide con la prevalencia con un sesgo de **+0,000043**. No quedaba mucho que
+    corregir.
+  - **La isotónica costó 0,0133 de PR-AUC, y eso merece explicación.** Un mapa monótono no
+    puede reordenar nada. Pero la regresión isotónica es solo **no decreciente**: colapsa
+    rangos de score en un valor constante, lo que **crea empates**, y los empates son de lo
+    que están hechas `precision@top-k%` y la precisión media. La sigmoide es estrictamente
+    creciente y dejó las siete métricas de ordenamiento **bit-idénticas**, lo que confirma el
+    mecanismo por contraste.
+  - **La sigmoide se conserva a pesar de todo**, y la decisión es del Verificador. Su costo
+    está medido y es despreciable: **+0,0008 de Brier —dentro de la desviación entre folds de
+    0,002— y exactamente 0,0000 de PR-AUC**. Un mapa de dos parámetros es un seguro barato si
+    la distribución de scores se mueve. Quitarla es una alternativa defendible.
+  - **Límite:** la curva se midió sobre esta población. Un modelo bien calibrado aquí no lo
+    está necesariamente sobre otra mezcla de clientes.
+
+### 008 — Umbral operativo desde una matriz de costos
+
+- **Fecha:** 2026-08-26
+- **Fase:** 02-modeling
+- **Objeto evaluado:** el modelo productivo —forest + calibración sigmoide— barrido sobre 201
+  umbrales de 0,000 a 1,000.
+- **Datos:** las 30.000 filas, con probabilidades **fuera de fold**: cada fila puntuada por un
+  modelo que no se ajustó con ella. Elegir un umbral sobre probabilidades en muestra lo
+  ajustaría a filas memorizadas y la matriz de confusión describiría el conjunto de
+  entrenamiento.
+- **Protocolo:** `StratifiedKFold(5, shuffle=True, random_state=42)`. Costo esperado
+  `ratio·FN + FP`. Empates resueltos hacia el umbral **más alto**, que rechaza a menos gente:
+  a igual costo esperado, intervenir sobre menos personas es estrictamente preferible.
+- **Supuesto de costos:** un falso negativo cuesta **5 veces** un falso positivo. Solo importa
+  el cociente. El umbral **no** se eligió maximizando F1 ni ningún criterio interno del
+  modelo; el ADR-0002 descarta F1 justamente por eso.
+
+**Resultado a 5:1 — umbral 0,160**
+
+| | Predicho: paga | Predicho: incumple |
+| --- | ---: | ---: |
+| **Pagó de verdad** | 16.498 | 6.866 |
+| **Incumplió de verdad** | 1.867 | 4.769 |
+
+Recall 0,7187 · Precisión 0,4099 · Costo esperado 16.201 unidades de falso positivo.
+
+**Sensibilidad al supuesto**
+
+| FN:FP | Umbral | Rechazados | Atrapados | Perdidos | Recall | Precisión |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 3:1 | 0,220 | 7.768 | 3.942 | 3.826 | 0,5940 | 0,5075 |
+| **5:1** | **0,160** | **11.635** | **4.769** | **6.866** | **0,7187** | **0,4099** |
+| 10:1 | 0,105 | 22.329 | 6.200 | 16.129 | 0,9343 | 0,2777 |
+
+- **Baseline:** los dos extremos degenerados del propio barrido, que el grid incluye en vez de
+  asumir. En el umbral **0,000** se rechaza a todo el mundo —`scores >= 0` siempre es cierto—
+  y el costo es `FP = 23.364`. En el umbral **1,000** se acepta a todo el mundo y el costo es
+  `5 × 6.636 = 33.180`. El umbral elegido cuesta **16.201**, un **30,7% menos que rechazar a
+  todos** y un **51,2% menos que aceptar a todos**. Un umbral que no batiera a ambos extremos
+  no valdría la pena calcularlo.
+- **Resultado en lenguaje de negocio:** sobre 30.000 clientes se rechazarían **11.635** (38,8%
+  del libro); de ellos **4.769** habrían incumplido de verdad y **6.866** habrían pagado. Se
+  atrapan **4.769 de 6.636** incumplidores (71,9%) y **1.867** pasan.
+- **Reproducción:** `uv run python scripts/run_threshold_selection.py`. Run
+  `494ca908b3594bd6977b2eac305bbcfc`, etiquetado `run_type=threshold-selection`, con el
+  barrido completo y la curva de costo como artefactos.
+- **Interpretación:**
+  - **La sensibilidad es el hallazgo, no el umbral.** Mover el cociente de 3:1 a 10:1 mueve el
+    umbral 0,115 y **14.561 clientes, el 48,5% del libro**. Quien fije el cociente está tomando
+    una decisión mucho mayor que la de elegir el modelo. Todo lo medido en esta fase —modelos,
+    desbalance, tuning, calibración— mueve menos negocio que ese único supuesto.
+  - **A 5:1 el 59% de los rechazos son clientes que habrían pagado.** No es un defecto del
+    umbral sino aritmética de la prevalencia: con 22% de positivos y un modelo de PR-AUC 0,56,
+    atrapar al 72% de los incumplidores exige rechazar al 29% de los pagadores. Presentar el
+    modelo como "acierta el 41% de los rechazos" y no como "atrapa el 72% de los
+    incumplidores" es la misma cifra leída desde el otro lado.
+  - **Límite:** el cociente 5:1 es un supuesto sin respaldo empírico en este proyecto. No hay
+    datos de exposición, de recuperación ni de margen, así que no se puede medir; declararlo
+    es más útil que inventarlo.
+
+### 009 — Modelo productivo registrado
+
+- **Fecha:** 2026-08-26
+- **Fase:** 02-modeling
+- **Objeto evaluado:** el `Pipeline` completo —preprocesador + forest calibrado— registrado
+  como `credit-risk-default-probability` versión 1.
+- **Datos:** ajustado sobre las **30.000 filas**. Las métricas asociadas **no salen de ese
+  ajuste**: son las de validación cruzada de la entrada 006.
+- **Protocolo:** ninguno. **Este registro no mide nada.** Un ajuste sobre todo el dataset es
+  correcto para producir el artefacto y sería fuga si de él se leyera una métrica; la
+  distinción está escrita en el docstring del script y en la sección 2 del Model Card.
+
+**Métricas asociadas al modelo en el registro, con su baseline al lado**
+
+| Métrica | Piso trivial | Baseline logística | **Modelo registrado** |
+| --- | ---: | ---: | ---: |
+| **PR-AUC** | 0,221200 | 0,540173 | **0,564230 ± 0,007962** |
+| ROC-AUC | 0,500000 | 0,776187 | 0,786279 |
+| KS | 0,000000 | 0,421780 | 0,439205 |
+| Gini | 0,000000 | 0,552373 | 0,572558 |
+| Brier (menor es mejor) | 0,221200 | 0,183357 | 0,133408 |
+| precision@top-10% | 0,221200 | 0,692667 | 0,706333 |
+| precision@top-5% | 0,221200 | 0,742667 | 0,768667 |
+
+- **Baseline:** los dos baselines viajan **dentro del registro**, como métricas del propio
+  modelo (`cv_baseline_trivial_pr_auc` y `cv_baseline_logistic_pr_auc`). Una entrada de
+  registro que guarde 0,564 y no el piso de 0,221 contra el que se lee invita a citar el
+  número solo, que es exactamente el modo de falla que la sección 7.3 de la metodología
+  describe.
+- **Resultado:** registrado como versión **1**, con firma inferida de 23 columnas crudas y
+  salida `(-1, 2)` en `float64`. Prueba de ida y vuelta superada: el artefacto cargado desde
+  el registro reproduce sus propias predicciones con una diferencia máxima de **1,1×10⁻¹⁶**.
+- **Reproducción:** `uv run python scripts/register_production_model.py`. Run
+  `418c633718074bae9473e9ddbbef26d6`, etiquetado `run_type=production-candidate`.
+- **Interpretación:**
+  - **El artefacto es el pipeline entero y no el clasificador.** Un consumidor le entrega las
+    23 columnas crudas que devuelve `loader.load_dataset` y nunca construye la matriz él
+    mismo. Es la garantía de la sección 6.3 de la metodología convertida en objeto.
+  - **Las predicciones no son reproducibles bit a bit, y quedó medido.** Con `n_jobs=-1` el
+    forest acumula los votos de 300 árboles entre hilos; la suma en coma flotante no es
+    asociativa y el mismo objeto llamado dos veces difiere en **5×10⁻¹⁶**. Con `n_jobs=1` la
+    diferencia es exactamente cero, lo que identifica la causa. Es quince órdenes de magnitud
+    por debajo del umbral de 0,160 y no puede cambiar una decisión, pero **invalida cualquier
+    test que exija igualdad de bits sobre predicciones**.
+  - **La firma declara enteros y eso es un riesgo abierto para la fase de API.** MLflow
+    advierte que un entero de Python no puede representar un faltante: si una petición llega
+    con un nulo, el enforcement de esquema fallará. El validador garantiza que el dataset no
+    tiene nulos; una API recibe lo que le mandan.
+  - **Límite:** el modelo está registrado como **candidato**, no promovido a producción. Lo
+    que falta antes de un despliegue real está en la sección 8 del Model Card, empezando por
+    la validación fuera de tiempo que el ADR-0001 declaró imposible con estos datos.

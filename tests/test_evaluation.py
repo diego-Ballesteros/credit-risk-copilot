@@ -95,7 +95,7 @@ def synthetic_frame(n_rows: int = 300, positive_rate: float = 0.22) -> pd.DataFr
 class FitCall:
     """One observed `fit` of a preprocessor."""
 
-    instance_id: int
+    serial: int
     n_rows: int
     n_positives: int
     saw_target: bool
@@ -107,6 +107,20 @@ class Journal:
 
     calls: list[FitCall] = field(default_factory=list)
     factory_calls: int = 0
+    constructed: int = 0
+
+    def next_serial(self) -> int:
+        """Hand out a serial number that identifies one constructed instance.
+
+        **This exists because `id()` cannot do the job.** CPython's `id` is the object's
+        memory address, and an address is reused as soon as the previous occupant is
+        collected. Each fold here builds a preprocessor, fits it, and drops it, so the next
+        one frequently lands at the same address - which made the identity test pass or fail
+        depending on allocation timing rather than on anything about the code. A counter
+        assigned at construction identifies an instance for as long as the journal lives.
+        """
+        self.constructed += 1
+        return self.constructed
 
 
 class RecordingPreprocessor(BaseEstimator, TransformerMixin):
@@ -116,14 +130,15 @@ class RecordingPreprocessor(BaseEstimator, TransformerMixin):
     fold" is a real statement about state and not just a counted call.
     """
 
-    def __init__(self, journal: Journal, columns: Sequence[str]) -> None:
+    def __init__(self, journal: Journal, columns: Sequence[str], serial: int) -> None:
         self.journal = journal
         self.columns = columns
+        self.serial = serial
 
     def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> "RecordingPreprocessor":  # noqa: N803
         self.journal.calls.append(
             FitCall(
-                instance_id=id(self),
+                serial=self.serial,
                 n_rows=len(X),
                 n_positives=-1 if y is None else int(np.sum(np.asarray(y))),
                 saw_target=y is not None,
@@ -141,7 +156,9 @@ def recording_factory(journal: Journal) -> object:
 
     def factory() -> Pipeline:
         journal.factory_calls += 1
-        return Pipeline([("record", RecordingPreprocessor(journal, NUMERIC_STAND_IN))])
+        return Pipeline(
+            [("record", RecordingPreprocessor(journal, NUMERIC_STAND_IN, journal.next_serial()))]
+        )
 
     return factory
 
@@ -195,7 +212,9 @@ def test_the_preprocessor_is_fitted_once_per_fold_and_never_before() -> None:
 
 def test_each_fold_gets_its_own_preprocessor_instance() -> None:
     # A reused instance is a fitted instance: fold 2 would be transformed with fold 1's
-    # medians. Distinct identities are what rule that out.
+    # medians. Distinct construction serials are what rule that out. Serials rather than
+    # id(): a memory address is reused once the previous object is collected, and these
+    # objects are short-lived, so id() tested allocation timing rather than the code.
     frame = synthetic_frame(200)
     features, target = split_features_and_target(frame)
     journal = Journal()
@@ -208,8 +227,9 @@ def test_each_fold_gets_its_own_preprocessor_instance() -> None:
         preprocessor_factory=recording_factory(journal),  # type: ignore[arg-type]
     )
 
-    identities = [call.instance_id for call in journal.calls]
-    assert len(set(identities)) == len(identities)
+    serials = [call.serial for call in journal.calls]
+    assert len(set(serials)) == len(serials)
+    assert journal.constructed == len(serials), "one construction per fitted instance"
 
 
 def test_the_preprocessor_never_sees_the_full_dataset() -> None:

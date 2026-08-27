@@ -15,6 +15,7 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "scikit-learn>=1.5",
+    "shap>=0.51.0",
     "ucimlrepo>=0.0.7",
 ]
 

@@ -356,6 +356,74 @@ def cross_validate_estimator(
     )
 
 
+def cross_val_probabilities(
+    estimator: BaseEstimator,
+    features: pd.DataFrame,
+    target: pd.Series,
+    *,
+    n_splits: int = DEFAULT_N_SPLITS,
+    random_state: int | None = None,
+    preprocessor_factory: PreprocessorFactory = build_preprocessor,
+) -> pd.Series:
+    """Score every row exactly once, by a model that was not fitted on it.
+
+    **Why anything downstream of a probability needs this and not `predict_proba`.** A
+    calibration curve and an operating threshold are both read off the *values* of the
+    predicted probabilities, and both are meaningless if those values came from a model that
+    had already seen the row. Fitting on all the data and predicting on all the data would
+    produce a calibration curve that looks excellent and a threshold tuned to rows the model
+    memorised. Out-of-fold prediction is what makes those two artefacts honest, and it uses
+    the same splitter, the same seed and the same preprocessor-inside-the-fold discipline as
+    every metric in the project, so the probabilities are comparable with them.
+
+    Each row belongs to exactly one validation fold, so every row is predicted exactly once
+    and the returned series covers the input with no gaps and no duplicates.
+
+    Args:
+        estimator: A classifier exposing `predict_proba`.
+        features: Predictors, without the label.
+        target: Binary label sharing the index of `features`.
+        n_splits: Number of folds.
+        random_state: Seed for the splitter. Defaults to `settings.random_state`.
+        preprocessor_factory: Builds the unfitted preprocessor, fitted once per fold.
+
+    Returns:
+        Probability of the positive class for every row, on the index of `features` and in
+        its original order.
+
+    Raises:
+        EvaluationInputError: If the estimator has no `predict_proba` or `n_splits` is
+            below 2.
+    """
+    if not hasattr(estimator, "predict_proba"):
+        raise EvaluationInputError(
+            f"{type(estimator).__name__} has no predict_proba, so it cannot produce the "
+            "probabilities a calibration curve or an operating threshold are read from."
+        )
+    if n_splits < 2:
+        raise EvaluationInputError(f"n_splits must be at least 2; got {n_splits}.")
+
+    seed = settings.random_state if random_state is None else random_state
+    splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    out_of_fold = pd.Series(np.nan, index=features.index, dtype=float, name="probability")
+
+    for train_index, validation_index in splitter.split(features, target):
+        pipeline = build_fold_pipeline(estimator, preprocessor_factory)
+        pipeline.fit(features.iloc[train_index], target.iloc[train_index])
+
+        classifier = terminal_estimator(pipeline.named_steps[MODEL_STEP])
+        column = _positive_class_column(classifier.classes_)
+        scores = pipeline.predict_proba(features.iloc[validation_index])[:, column]
+        out_of_fold.iloc[validation_index] = scores
+
+    if out_of_fold.isna().any():
+        raise EvaluationInputError(
+            "Some rows were never scored, so the folds did not cover the data. "
+            "That should be impossible with StratifiedKFold and means the index moved."
+        )
+    return out_of_fold
+
+
 def fit_and_score(
     estimator: BaseEstimator,
     train_features: pd.DataFrame,
