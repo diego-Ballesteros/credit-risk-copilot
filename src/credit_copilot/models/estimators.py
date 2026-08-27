@@ -13,10 +13,26 @@ two call sites to drift apart, which is exactly what the module exists to preven
 later turn needs a second configuration - the roadmap names an L1 variant for the model
 comparison - it gets its own named constructor here, so that the difference between two
 measured models is visible as two function names rather than hidden in an argument.
+
+**Why the tree constructors do take arguments, and only these.** The imbalance comparison
+is an experiment *about* `class_weight`, and the tuning study is an experiment about the
+structural hyperparameters; a constructor that refused to vary them would force those
+scripts to build their own estimators and reintroduce exactly the duplication this module
+removes. The arguments are therefore the ones a measurement legitimately varies, each with
+the default that the untuned comparison used, so calling the constructor with no arguments
+still reproduces the recorded baseline configuration exactly.
+
+**Why there is no LightGBM here.** It was the intended third model and it does not import
+on this machine: the wheel ships `lib_lightgbm.dll`, but loading it needs the Microsoft
+Visual C++ runtime, and this system carries only the .NET-bundled `*_clr0400` variants.
+`HistGradientBoostingClassifier` stands in - the same family of histogram-based gradient
+boosting, from a library already installed, with no native dependency to resolve. The
+substitution is recorded in the report of the turn that made it, not decided here.
 """
 
 from typing import Final
 
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 
 from credit_copilot.config import settings
@@ -56,5 +72,80 @@ def build_logistic_regression() -> LogisticRegression:
         l1_ratio=LOGISTIC_L1_RATIO,
         class_weight="balanced",
         max_iter=LOGISTIC_MAX_ITER,
+        random_state=settings.random_state,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tree ensembles - untuned defaults for the model comparison
+# ---------------------------------------------------------------------------
+
+RANDOM_FOREST_N_ESTIMATORS: Final[int] = 300
+"""Trees in the forest. Enough that the averaging has converged, so the comparison is not
+measuring how noisy a small forest is; a forest's error falls monotonically with this
+number and then flattens, so it is not a parameter that can flatter the model."""
+
+RANDOM_FOREST_MIN_SAMPLES_LEAF: Final[int] = 20
+"""Minimum rows in a leaf. The one deliberate piece of regularisation in the untuned
+forest: with the default of 1 a forest grows leaves holding a single row, memorises the
+training fold and reports a validation metric dominated by variance. 20 rows on 24,000 is
+mild - about 0.08% of the fold - and it is the knob the tuning study is free to move."""
+
+HIST_GB_MAX_ITER: Final[int] = 300
+"""Boosting rounds, matched to the forest's tree count so the two ensembles are given a
+comparable budget rather than one being handicapped."""
+
+HIST_GB_LEARNING_RATE: Final[float] = 0.05
+"""Shrinkage per round. Low enough that 300 rounds is a real fit rather than a few large
+steps, which is the pairing that makes the round count meaningful."""
+
+HIST_GB_MAX_LEAF_NODES: Final[int] = 31
+"""Leaves per tree. The long-standing default of this family of boosters."""
+
+
+def build_random_forest(class_weight: str | None = "balanced") -> RandomForestClassifier:
+    """Build the project's untuned random forest.
+
+    Args:
+        class_weight: Reweighting strategy. `"balanced"` is the configuration the model
+            comparison measured; the imbalance comparison varies it, which is what this
+            argument exists for.
+
+    Returns:
+        An unfitted estimator.
+    """
+    return RandomForestClassifier(
+        n_estimators=RANDOM_FOREST_N_ESTIMATORS,
+        min_samples_leaf=RANDOM_FOREST_MIN_SAMPLES_LEAF,
+        class_weight=class_weight,
+        n_jobs=-1,
+        random_state=settings.random_state,
+    )
+
+
+def build_hist_gradient_boosting(
+    class_weight: str | None = "balanced",
+) -> HistGradientBoostingClassifier:
+    """Build the project's untuned histogram gradient boosting.
+
+    **`early_stopping` is switched off deliberately.** Its default of `"auto"` turns it on
+    above 10,000 rows, which would carve an internal validation split out of each training
+    fold and stop at a different round in every fold. That is a legitimate way to fit a
+    model and a bad way to run a comparison: the number of rounds would stop being a fixed
+    quantity and two arms would differ by something other than the thing under test. Fixing
+    it here makes the round count exactly `HIST_GB_MAX_ITER` in every fold.
+
+    Args:
+        class_weight: Reweighting strategy, varied by the imbalance comparison.
+
+    Returns:
+        An unfitted estimator.
+    """
+    return HistGradientBoostingClassifier(
+        max_iter=HIST_GB_MAX_ITER,
+        learning_rate=HIST_GB_LEARNING_RATE,
+        max_leaf_nodes=HIST_GB_MAX_LEAF_NODES,
+        class_weight=class_weight,
+        early_stopping=False,
         random_state=settings.random_state,
     )

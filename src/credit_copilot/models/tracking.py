@@ -21,9 +21,7 @@ carrying `user:password@` in it. The credentials themselves are moved from `conf
 logged or attached to a run.
 """
 
-import contextlib
 import os
-import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
@@ -33,6 +31,7 @@ import mlflow
 from mlflow.entities import Experiment
 
 from credit_copilot.config import settings
+from credit_copilot.console import enable_unicode_console
 
 DEFAULT_EXPERIMENT_NAME: Final[str] = "credit-risk-baselines"
 """Experiment that holds the phase-2 floor: the baselines and the leakage check."""
@@ -108,34 +107,6 @@ def _missing_settings() -> Sequence[str]:
     ]
 
 
-def _enable_unicode_console() -> None:
-    """Make the standard streams able to carry the characters MLflow writes to them.
-
-    At the end of every run MLflow writes two lines to stdout that begin with an emoji, and
-    it does so unconditionally - there is no setting that turns them off. A Windows console
-    defaults to cp1252, which cannot encode them, so the write raises `UnicodeEncodeError`
-    from inside `end_run`.
-
-    That crash is worth defending against specifically, because of *when* it happens: the
-    metrics have already been sent and the run already exists on the server, so the script
-    dies with a non-zero exit code over a measurement that in fact succeeded. It is the
-    exact inversion of what an exit code is for, and it would be read as a failed run.
-
-    Reconfiguring to UTF-8 is idempotent and a no-op on a console that already speaks it.
-    If the stream refuses to be reconfigured at all, the fallback only makes encoding errors
-    non-fatal, because a decorative line MLflow prints must never be able to fail a run.
-    """
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is None:
-            continue
-        try:
-            reconfigure(encoding="utf-8")
-        except (ValueError, OSError):
-            with contextlib.suppress(ValueError, OSError):
-                reconfigure(errors="backslashreplace")
-
-
 def configure_mlflow() -> str:
     """Point MLflow at the remote tracking server, or refuse to continue.
 
@@ -144,10 +115,12 @@ def configure_mlflow() -> str:
     calling it twice is harmless and is how each script guarantees its own state rather
     than assuming an earlier import arranged it.
 
-    It also prepares the console for the output MLflow is about to produce - see
-    `_enable_unicode_console`. That belongs here rather than in each script because the
-    problem it avoids is created by pointing MLflow at a server, and a script that forgot
-    the call would fail *after* recording its run.
+    It also prepares the console for the output MLflow is about to produce, by calling
+    `console.enable_unicode_console`. MLflow prints two emoji-prefixed lines at the end of
+    every run and offers no setting to suppress them, so a cp1252 console would raise
+    *after* the run was already recorded. The call stays here because that failure is
+    created by pointing MLflow at a server; the function itself lives in `console`, which
+    imports no MLflow, so a script that never tracks anything can still use it.
 
     Returns:
         The tracking URI with any embedded credentials redacted. This is the only URI the
@@ -168,7 +141,7 @@ def configure_mlflow() -> str:
             "anywhere the project can find it. Copy .env.example to .env and fill it in."
         )
 
-    _enable_unicode_console()
+    enable_unicode_console()
 
     uri = (settings.mlflow_tracking_uri or "").strip()
     os.environ["MLFLOW_TRACKING_URI"] = uri

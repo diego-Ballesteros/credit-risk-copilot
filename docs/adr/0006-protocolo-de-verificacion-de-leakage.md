@@ -112,6 +112,12 @@ error estándar. Descartada por el tamaño de la muestra: ocho permutaciones sit
 centro y la dispersión, pero no alcanzan para caracterizar las colas, y un cuantil
 estimado con ocho puntos afirmaría una precisión que la medición no tiene.
 
+> **Nota de autoría, 2026-08-26.** Esta tercera alternativa **no salió del debate con el
+> Arquitecto**: la aportó el Ejecutor durante la implementación, al escribir el ADR. Se
+> conserva porque el argumento se revisó y es correcto, pero queda marcada para no
+> confundir su procedencia con la del resto del documento. El resto de las decisiones y
+> alternativas de este ADR sí provienen del debate.
+
 ---
 
 ## Consecuencias

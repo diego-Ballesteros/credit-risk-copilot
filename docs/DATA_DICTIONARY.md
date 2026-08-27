@@ -292,9 +292,11 @@ entrenamiento y la API tienen que consumir **el mismo objeto**, porque dos copia
 misma aritmética divergen.
 
 Son **22 columnas**. Ponen a prueba la hipótesis principal de `docs/ROADMAP.md` — que el
-comportamiento de pago reciente predice mejor que la demografía estática — y su poder
-predictivo **todavía no está medido**: este documento describe qué son y qué contienen, no
-cuánto aportan.
+comportamiento de pago reciente predice mejor que la demografía estática. Este documento
+describe qué son y qué contienen, no cuánto aportan: **la medición está en la entrada 003
+de [`docs/EVALUATION.md`](EVALUATION.md)**, que contrasta un modelo de solo comportamiento
+contra uno de solo demografía y sostiene la hipótesis (PR-AUC 0,5362 contra 0,3056, sobre
+un piso de 0,2212).
 
 **Fecha de medición de los rangos observados:** 2026-08-25, sobre las 30.000 filas del
 archivo descargado.

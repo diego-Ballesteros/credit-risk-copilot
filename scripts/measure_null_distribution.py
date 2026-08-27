@@ -40,6 +40,7 @@ import numpy as np
 import pandas as pd
 
 from credit_copilot.config import settings
+from credit_copilot.console import enable_unicode_console
 from credit_copilot.data.loader import load_dataset
 from credit_copilot.models.estimators import build_logistic_regression
 from credit_copilot.models.evaluation import (
@@ -117,6 +118,7 @@ def main() -> int:
         0 always. This script measures; it does not judge. The criterion it feeds lives in
         `run_leakage_check.py`, and that is the script with a verdict and an exit code.
     """
+    enable_unicode_console()
     print(RULE)
     print("NULL DISTRIBUTION OF THE RANKING METRICS - measured on the real pipeline")
     print(RULE)

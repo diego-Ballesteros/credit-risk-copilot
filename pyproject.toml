@@ -5,8 +5,11 @@ description = "Credit risk scoring (probability of default) with an agentic copi
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
+    "imbalanced-learn>=0.14.2",
     "joblib>=1.4",
+    "lightgbm>=4.7.0",
     "mlflow>=3.15.2",
+    "optuna>=4.9.0",
     "pandas>=2.2",
     "pyarrow>=16.0",
     "pydantic>=2.7",

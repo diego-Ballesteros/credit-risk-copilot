@@ -41,7 +41,7 @@ from sklearn.pipeline import Pipeline
 from credit_copilot.config import settings
 from credit_copilot.data import schema
 from credit_copilot.data.preprocessor import build_preprocessor
-from credit_copilot.models.metrics import REPORTED_METRIC_NAMES, compute_metrics
+from credit_copilot.models.metrics import DECISION_METRIC, REPORTED_METRIC_NAMES, compute_metrics
 from credit_copilot.models.tracking import ExperimentContext
 
 DEFAULT_N_SPLITS: Final[int] = 5
@@ -58,6 +58,21 @@ MODEL_STEP: Final[str] = "model"
 
 FOLD_METRICS_ARTEFACT: Final[str] = "fold_metrics.csv"
 """Filename of the per-fold table attached to every run."""
+
+PRACTICAL_SIGNIFICANCE_THRESHOLD: Final[float] = 0.02
+"""Smallest difference in PR-AUC this protocol is willing to call a difference.
+
+**Fixed before any of the results it judges were computed.** The five-fold standard
+deviation measured on this dataset is of the order of 0.010, so a gap below about twice
+that cannot be told apart from which rows happened to land in which fold. Writing the
+number down in advance, in one place, is what stops a comparison from being settled after
+the fact by whichever reading favours the preferred model - the failure mode section 9 of
+`docs/METHODOLOGY.md` lists as a sign the method is degrading.
+
+It is a threshold of *practical* significance and not a statistical test. A difference
+below it is not evidence of no difference; it is a difference this measurement cannot
+resolve, which is a different and more honest statement.
+"""
 
 PreprocessorFactory = Callable[[], Pipeline]
 """Builds an unfitted preprocessing pipeline. Called once per fold, never reused."""
@@ -339,6 +354,140 @@ def cross_validate_estimator(
         fold_positive_rates=tuple(fold_positive_rates),
         fold_n_features=tuple(fold_n_features),
     )
+
+
+def fit_and_score(
+    estimator: BaseEstimator,
+    train_features: pd.DataFrame,
+    train_target: pd.Series,
+    score_features: pd.DataFrame,
+    score_target: pd.Series,
+    preprocessor_factory: PreprocessorFactory = build_preprocessor,
+) -> Mapping[str, float]:
+    """Fit the full pipeline on one training set and score one held-out set.
+
+    The single-split counterpart of `cross_validate_estimator`, and it exists for the outer
+    loop of a nested cross-validation, where the inner loop has already chosen the
+    hyperparameters and the outer fold has to be scored exactly once.
+
+    Written here rather than in the tuning script on purpose. Scoring a fold by hand means
+    re-deriving which column of `predict_proba` holds the positive class, and getting that
+    wrong produces numbers in [0, 1] that look entirely reasonable while describing the
+    other class. There is one implementation of that lookup and this shares it.
+
+    Args:
+        estimator: A classifier exposing `predict_proba`.
+        train_features: Predictors to fit on.
+        train_target: Labels to fit on.
+        score_features: Predictors to score.
+        score_target: Labels to score against.
+        preprocessor_factory: Builds the unfitted preprocessor, fitted here on the training
+            rows only.
+
+    Returns:
+        Every reported metric on the held-out set.
+    """
+    pipeline = build_fold_pipeline(estimator, preprocessor_factory)
+    pipeline.fit(train_features, train_target)
+
+    classifier = terminal_estimator(pipeline.named_steps[MODEL_STEP])
+    column = _positive_class_column(classifier.classes_)
+    scores = pipeline.predict_proba(score_features)[:, column]
+    return compute_metrics(score_target.to_numpy(), scores)
+
+
+@dataclass(frozen=True)
+class Comparison:
+    """One measurement read against a reference, with the verdict spelled out.
+
+    Attributes:
+        label: Name of the measurement being judged.
+        value: Its mean of the metric across folds.
+        reference_value: The reference's mean of the same metric.
+        difference: `value - reference_value`.
+        spread: Standard deviation across folds of the measurement being judged, which is
+            the scale the difference has to be read against.
+        threshold: The difference this protocol requires before calling it a difference.
+        clears_threshold: Whether `abs(difference)` reached `threshold`.
+    """
+
+    label: str
+    value: float
+    reference_value: float
+    difference: float
+    spread: float
+    threshold: float
+    clears_threshold: bool
+
+    @property
+    def verdict(self) -> str:
+        """One-line reading of the difference, in the vocabulary the reports use.
+
+        Returns:
+            A short phrase saying whether the gap is resolvable and in which direction.
+        """
+        if not self.clears_threshold:
+            return f"within noise (< {self.threshold:.2f})"
+        return "better than reference" if self.difference > 0 else "worse than reference"
+
+
+def compare_to_reference(
+    label: str,
+    result: CrossValidationResult,
+    reference: CrossValidationResult,
+    metric: str = DECISION_METRIC,
+    threshold: float = PRACTICAL_SIGNIFICANCE_THRESHOLD,
+) -> Comparison:
+    """Judge one measurement against a reference on the decision metric.
+
+    Every comparison in the project goes through here, so that no report can quote a
+    difference without the spread beside it and without saying whether the threshold was
+    reached. The rule is applied by the code rather than remembered by the author.
+
+    Args:
+        label: Name of the measurement being judged.
+        result: The measurement.
+        reference: What it is being compared against, measured on the same folds.
+        metric: Metric to compare on. Defaults to the decision metric of ADR-0002.
+        threshold: Smallest difference worth calling a difference.
+
+    Returns:
+        The difference, the spread it has to be read against, and the verdict.
+    """
+    value = result.means[metric]
+    reference_value = reference.means[metric]
+    difference = value - reference_value
+    return Comparison(
+        label=label,
+        value=value,
+        reference_value=reference_value,
+        difference=difference,
+        spread=result.stds[metric],
+        threshold=threshold,
+        clears_threshold=abs(difference) >= threshold,
+    )
+
+
+def format_comparison_verdicts(comparisons: Sequence[Comparison], metric: str) -> str:
+    """Render a set of comparisons as a table, difference and verdict together.
+
+    Args:
+        comparisons: The comparisons, in row order.
+        metric: Name of the metric being compared, for the heading.
+
+    Returns:
+        A plain-text table, without a trailing newline.
+    """
+    header = (
+        f"{'model':<28}{metric:>12}{'std':>10}{'reference':>12}{'difference':>13}{'verdict':>28}"
+    )
+    lines = [header, "-" * len(header)]
+    for item in comparisons:
+        lines.append(
+            f"{item.label:<28}{item.value:>12.4f}{item.spread:>10.4f}"
+            f"{item.reference_value:>12.4f}{item.difference:>+13.4f}{item.verdict:>28}"
+        )
+    return "\n".join(lines)
 
 
 def _loggable_params(estimator: BaseEstimator) -> Mapping[str, str]:
