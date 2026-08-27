@@ -1,0 +1,727 @@
+"""Cross-validation with the preprocessor inside it. The routine every measurement uses.
+
+**The one thing this module exists to make impossible.** `data/processed/features.parquet`
+was produced by fitting the pipeline on all 30,000 rows. Training or evaluating on it would
+mean every validation row was scaled, clipped and imputed with statistics that had already
+seen that row, and the resulting metric would be optimistic by an amount nobody can bound
+afterwards. This module never reads that file. It takes the canonical table, and inside
+each fold it builds a *fresh* preprocessor and fits it on that fold's training part alone.
+
+**Why the preprocessor arrives as a factory and not as an object.** Handing in a built
+`Pipeline` would invite reusing one instance across folds, and a reused instance is a
+fitted instance: fold 2 would be transformed with fold 1's medians. A factory cannot be
+misused that way, because each fold calls it and gets an object nobody has fitted. The same
+seam is what lets `tests/test_evaluation.py` insert a counter and prove that the fit happens
+once per fold, on the training rows only - the claim in this paragraph is checked, not
+asserted.
+
+**Why the metric functions are not in this module.** `metrics.py` owns the seven numbers of
+ADR-0002 and this module owns how the data is split. Keeping them apart means a change to
+the validation protocol cannot quietly change what a metric means.
+
+**What reaches MLflow, and what does not.** `evaluate_and_log` records the model's
+parameters, every metric with its mean and standard deviation across folds, the number of
+folds, and the per-fold table as an artefact. Credentials are read by `tracking.py` into the
+process environment and never become a parameter, a tag or a line of output.
+"""
+
+import tempfile
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Final
+
+import mlflow
+import numpy as np
+import pandas as pd
+from sklearn.base import BaseEstimator, clone
+from sklearn.model_selection import StratifiedKFold
+from sklearn.pipeline import Pipeline
+
+from credit_copilot.config import settings
+from credit_copilot.data import schema
+from credit_copilot.data.preprocessor import build_preprocessor
+from credit_copilot.models.metrics import DECISION_METRIC, REPORTED_METRIC_NAMES, compute_metrics
+from credit_copilot.models.tracking import ExperimentContext
+
+DEFAULT_N_SPLITS: Final[int] = 5
+"""Folds used by every measurement in the project, so results stay comparable."""
+
+POSITIVE_LABEL: Final[int] = 1
+"""The class whose probability is scored: the client defaults next month."""
+
+PREPROCESSOR_STEP: Final[str] = "preprocess"
+"""Name of the preprocessing step inside the per-fold pipeline."""
+
+MODEL_STEP: Final[str] = "model"
+"""Name of the estimator step inside the per-fold pipeline."""
+
+FOLD_METRICS_ARTEFACT: Final[str] = "fold_metrics.csv"
+"""Filename of the per-fold table attached to every run."""
+
+PRACTICAL_SIGNIFICANCE_THRESHOLD: Final[float] = 0.02
+"""Smallest difference in PR-AUC this protocol is willing to call a difference.
+
+**Fixed before any of the results it judges were computed.** The five-fold standard
+deviation measured on this dataset is of the order of 0.010, so a gap below about twice
+that cannot be told apart from which rows happened to land in which fold. Writing the
+number down in advance, in one place, is what stops a comparison from being settled after
+the fact by whichever reading favours the preferred model - the failure mode section 9 of
+`docs/METHODOLOGY.md` lists as a sign the method is degrading.
+
+It is a threshold of *practical* significance and not a statistical test. A difference
+below it is not evidence of no difference; it is a difference this measurement cannot
+resolve, which is a different and more honest statement.
+"""
+
+PreprocessorFactory = Callable[[], Pipeline]
+"""Builds an unfitted preprocessing pipeline. Called once per fold, never reused."""
+
+
+class EvaluationInputError(ValueError):
+    """The data handed to the cross-validation cannot support the protocol asked for."""
+
+
+@dataclass(frozen=True)
+class CrossValidationResult:
+    """Everything one cross-validated measurement produced, per fold and summarised.
+
+    The per-fold table is kept rather than only its summary, because a mean of five folds
+    hides the case that matters most: four folds agreeing and one disagreeing loudly. The
+    standard deviation is what makes a difference between two models readable as a real
+    difference or as noise.
+
+    Attributes:
+        estimator_name: Class name of the estimator that was evaluated.
+        n_splits: Number of folds.
+        n_samples: Rows in the full dataset the folds were cut from.
+        positive_rate: Share of the positive class over the full dataset. This is the floor
+            of PR-AUC and of both precision-at-top metrics, so no value in `fold_metrics`
+            can be read without it.
+        random_state: Seed handed to the splitter.
+        fold_metrics: One row per fold, one column per name in `REPORTED_METRIC_NAMES`,
+            indexed by a 1-based fold number.
+        fold_positive_rates: Share of the positive class in each validation fold. Present so
+            that "the split was stratified" is a number the reader can check.
+        fold_n_features: How many matrix columns reached the classifier in each fold. It is
+            a tuple rather than a single number because a fold whose training part never saw
+            a rare one-hot level produces no column for it, so the width can legitimately
+            differ by one or two between folds.
+    """
+
+    estimator_name: str
+    n_splits: int
+    n_samples: int
+    positive_rate: float
+    random_state: int
+    fold_metrics: pd.DataFrame
+    fold_positive_rates: tuple[float, ...]
+    fold_n_features: tuple[int, ...]
+
+    @property
+    def n_features(self) -> int:
+        """Widest matrix the classifier was handed across the folds.
+
+        The maximum rather than the first fold's value, so that a comparison between models
+        never understates what one of them had available. When the arms of an experiment
+        differ in the columns they see, this is its independent variable; `fold_n_features`
+        holds the detail when the folds disagree.
+
+        Returns:
+            The largest per-fold feature count.
+        """
+        return max(self.fold_n_features)
+
+    @property
+    def means(self) -> Mapping[str, float]:
+        """Mean of each metric across folds.
+
+        Returns:
+            Metric name -> mean, in `REPORTED_METRIC_NAMES` order.
+        """
+        return {name: float(self.fold_metrics[name].mean()) for name in self.fold_metrics.columns}
+
+    @property
+    def stds(self) -> Mapping[str, float]:
+        """Sample standard deviation of each metric across folds.
+
+        Uses `ddof=1`: the five folds are a sample of the possible splits, not the
+        population of them.
+
+        Returns:
+            Metric name -> standard deviation, in `REPORTED_METRIC_NAMES` order.
+        """
+        return {
+            name: float(self.fold_metrics[name].std(ddof=1)) for name in self.fold_metrics.columns
+        }
+
+    def summary_frame(self) -> pd.DataFrame:
+        """Per-fold table with the mean and standard deviation appended as rows.
+
+        Returns:
+            A copy of `fold_metrics` with two extra rows, `mean` and `std`. It is a copy:
+            the fold table is the record of the measurement and is not modified in place.
+        """
+        summary = self.fold_metrics.copy()
+        summary.loc["mean"] = pd.Series(self.means)
+        summary.loc["std"] = pd.Series(self.stds)
+        return summary
+
+
+def split_features_and_target(
+    frame: pd.DataFrame,
+    target_column: str = schema.TARGET_COLUMN,
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Separate the canonical table into predictors and label.
+
+    The preprocessor's `ColumnTransformer` already drops the target by not selecting it, so
+    removing the column here is a second, independent guarantee rather than the only one.
+    Two mechanisms have to fail together for the label to reach the matrix.
+
+    Args:
+        frame: Canonical table as `loader.load_dataset` returns it.
+        target_column: Name of the label column.
+
+    Returns:
+        The predictors without the label, and the label.
+
+    Raises:
+        EvaluationInputError: If the label column is not in the frame.
+    """
+    if target_column not in frame.columns:
+        raise EvaluationInputError(
+            f"The frame has no column {target_column!r}. Load it through "
+            "loader.load_dataset, which applies the canonical names."
+        )
+    return frame.drop(columns=[target_column]), frame[target_column]
+
+
+def _positive_class_column(classes: Sequence[Any]) -> int:
+    """Locate the column of `predict_proba` that holds the positive class.
+
+    Reading column 1 by position is right for almost every estimator and wrong in exactly
+    the case that is hardest to notice, because the numbers stay in [0, 1] and the metrics
+    stay plausible - they simply describe the wrong class. The column is therefore looked
+    up by label.
+
+    Args:
+        classes: The estimator's `classes_`, in `predict_proba` column order.
+
+    Returns:
+        Index of the column for `POSITIVE_LABEL`.
+
+    Raises:
+        EvaluationInputError: If the estimator never saw the positive class.
+    """
+    labels = [int(label) for label in classes]
+    if POSITIVE_LABEL not in labels:
+        raise EvaluationInputError(
+            f"The estimator was fitted without the positive class {POSITIVE_LABEL}; "
+            f"it knows {labels}. A fold with one class means the split is not stratified."
+        )
+    return labels.index(POSITIVE_LABEL)
+
+
+def terminal_estimator(estimator: BaseEstimator) -> BaseEstimator:
+    """Unwrap nested pipelines down to the object that actually classifies.
+
+    The estimator handed to `cross_validate_estimator` is usually a bare classifier, but the
+    hypothesis contrast passes a small pipeline that selects a column group before the model.
+    Attributes like `n_features_in_` mean different things at the two levels: on the wrapper
+    it counts the columns that went *into* the selection, on the classifier the ones that
+    came *out*. Only the second answers "how many features did this model use".
+
+    Args:
+        estimator: A fitted estimator, possibly a pipeline of pipelines.
+
+    Returns:
+        The innermost non-pipeline estimator.
+    """
+    current = estimator
+    while isinstance(current, Pipeline):
+        current = current.steps[-1][1]
+    return current
+
+
+def build_fold_pipeline(
+    estimator: BaseEstimator,
+    preprocessor_factory: PreprocessorFactory = build_preprocessor,
+) -> Pipeline:
+    """Assemble the full pipeline for one fold: fresh preprocessor, then a clone of the model.
+
+    Both halves are new objects. `clone` copies the estimator's parameters and discards
+    anything it learned, so a caller can pass the same configured estimator to several
+    evaluations without one run's fitted state leaking into another.
+
+    Args:
+        estimator: A scikit-learn classifier exposing `predict_proba`.
+        preprocessor_factory: Builds the unfitted preprocessing pipeline.
+
+    Returns:
+        An unfitted `Pipeline` of two steps, `preprocess` then `model`.
+    """
+    return Pipeline(
+        [
+            (PREPROCESSOR_STEP, preprocessor_factory()),
+            (MODEL_STEP, clone(estimator)),
+        ]
+    )
+
+
+def cross_validate_estimator(
+    estimator: BaseEstimator,
+    features: pd.DataFrame,
+    target: pd.Series,
+    *,
+    n_splits: int = DEFAULT_N_SPLITS,
+    random_state: int | None = None,
+    preprocessor_factory: PreprocessorFactory = build_preprocessor,
+) -> CrossValidationResult:
+    """Run stratified k-fold cross-validation with the preprocessor fitted inside each fold.
+
+    The protocol, fixed for the whole project so that two measurements are comparable:
+    `StratifiedKFold` with shuffling on and the seed from `config.py`. Stratification keeps
+    the 22% positive rate steady in every fold, which matters more here than usual because
+    PR-AUC's floor *is* that rate - a fold with a different prevalence would be scored
+    against a different floor.
+
+    For each fold, in order: build a new preprocessor, clone the estimator, fit the pair on
+    the training rows only, then score the held-out rows. Nothing computed on a validation
+    row ever reaches the object that transforms it.
+
+    Args:
+        estimator: A scikit-learn classifier exposing `predict_proba`.
+        features: Predictors, without the label. See `split_features_and_target`.
+        target: Binary label sharing the index of `features`.
+        n_splits: Number of folds.
+        random_state: Seed for the splitter. Defaults to `settings.random_state`.
+        preprocessor_factory: Builds the unfitted preprocessor for each fold.
+
+    Returns:
+        Per-fold metrics plus everything needed to read them: prevalence, fold count, fold
+        sizes and seed.
+
+    Raises:
+        EvaluationInputError: If the estimator has no `predict_proba`, if `features` and
+            `target` disagree in length, or if `n_splits` is below 2.
+    """
+    if not hasattr(estimator, "predict_proba"):
+        raise EvaluationInputError(
+            f"{type(estimator).__name__} has no predict_proba. Six of the seven metrics of "
+            "ADR-0002 are computed on a score, not on a label."
+        )
+    if len(features) != len(target):
+        raise EvaluationInputError(
+            f"features has {len(features)} rows and target has {len(target)}."
+        )
+    if n_splits < 2:
+        raise EvaluationInputError(f"n_splits must be at least 2; got {n_splits}.")
+
+    seed = settings.random_state if random_state is None else random_state
+    splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+
+    rows: list[Mapping[str, float]] = []
+    fold_positive_rates: list[float] = []
+    fold_n_features: list[int] = []
+
+    for train_index, validation_index in splitter.split(features, target):
+        train_features = features.iloc[train_index]
+        train_target = target.iloc[train_index]
+        validation_features = features.iloc[validation_index]
+        validation_target = target.iloc[validation_index]
+
+        pipeline = build_fold_pipeline(estimator, preprocessor_factory)
+        pipeline.fit(train_features, train_target)
+
+        classifier = terminal_estimator(pipeline.named_steps[MODEL_STEP])
+        column = _positive_class_column(classifier.classes_)
+        scores = pipeline.predict_proba(validation_features)[:, column]
+
+        rows.append(compute_metrics(validation_target.to_numpy(), scores))
+        fold_positive_rates.append(float(validation_target.mean()))
+        fold_n_features.append(int(classifier.n_features_in_))
+
+    fold_metrics = pd.DataFrame(rows, columns=list(REPORTED_METRIC_NAMES))
+    fold_metrics.index = pd.Index(range(1, n_splits + 1), name="fold")
+
+    return CrossValidationResult(
+        estimator_name=type(terminal_estimator(estimator)).__name__,
+        n_splits=n_splits,
+        n_samples=len(target),
+        positive_rate=float(target.mean()),
+        random_state=seed,
+        fold_metrics=fold_metrics,
+        fold_positive_rates=tuple(fold_positive_rates),
+        fold_n_features=tuple(fold_n_features),
+    )
+
+
+def cross_val_probabilities(
+    estimator: BaseEstimator,
+    features: pd.DataFrame,
+    target: pd.Series,
+    *,
+    n_splits: int = DEFAULT_N_SPLITS,
+    random_state: int | None = None,
+    preprocessor_factory: PreprocessorFactory = build_preprocessor,
+) -> pd.Series:
+    """Score every row exactly once, by a model that was not fitted on it.
+
+    **Why anything downstream of a probability needs this and not `predict_proba`.** A
+    calibration curve and an operating threshold are both read off the *values* of the
+    predicted probabilities, and both are meaningless if those values came from a model that
+    had already seen the row. Fitting on all the data and predicting on all the data would
+    produce a calibration curve that looks excellent and a threshold tuned to rows the model
+    memorised. Out-of-fold prediction is what makes those two artefacts honest, and it uses
+    the same splitter, the same seed and the same preprocessor-inside-the-fold discipline as
+    every metric in the project, so the probabilities are comparable with them.
+
+    Each row belongs to exactly one validation fold, so every row is predicted exactly once
+    and the returned series covers the input with no gaps and no duplicates.
+
+    Args:
+        estimator: A classifier exposing `predict_proba`.
+        features: Predictors, without the label.
+        target: Binary label sharing the index of `features`.
+        n_splits: Number of folds.
+        random_state: Seed for the splitter. Defaults to `settings.random_state`.
+        preprocessor_factory: Builds the unfitted preprocessor, fitted once per fold.
+
+    Returns:
+        Probability of the positive class for every row, on the index of `features` and in
+        its original order.
+
+    Raises:
+        EvaluationInputError: If the estimator has no `predict_proba` or `n_splits` is
+            below 2.
+    """
+    if not hasattr(estimator, "predict_proba"):
+        raise EvaluationInputError(
+            f"{type(estimator).__name__} has no predict_proba, so it cannot produce the "
+            "probabilities a calibration curve or an operating threshold are read from."
+        )
+    if n_splits < 2:
+        raise EvaluationInputError(f"n_splits must be at least 2; got {n_splits}.")
+
+    seed = settings.random_state if random_state is None else random_state
+    splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    out_of_fold = pd.Series(np.nan, index=features.index, dtype=float, name="probability")
+
+    for train_index, validation_index in splitter.split(features, target):
+        pipeline = build_fold_pipeline(estimator, preprocessor_factory)
+        pipeline.fit(features.iloc[train_index], target.iloc[train_index])
+
+        classifier = terminal_estimator(pipeline.named_steps[MODEL_STEP])
+        column = _positive_class_column(classifier.classes_)
+        scores = pipeline.predict_proba(features.iloc[validation_index])[:, column]
+        out_of_fold.iloc[validation_index] = scores
+
+    if out_of_fold.isna().any():
+        raise EvaluationInputError(
+            "Some rows were never scored, so the folds did not cover the data. "
+            "That should be impossible with StratifiedKFold and means the index moved."
+        )
+    return out_of_fold
+
+
+def fit_and_score(
+    estimator: BaseEstimator,
+    train_features: pd.DataFrame,
+    train_target: pd.Series,
+    score_features: pd.DataFrame,
+    score_target: pd.Series,
+    preprocessor_factory: PreprocessorFactory = build_preprocessor,
+) -> Mapping[str, float]:
+    """Fit the full pipeline on one training set and score one held-out set.
+
+    The single-split counterpart of `cross_validate_estimator`, and it exists for the outer
+    loop of a nested cross-validation, where the inner loop has already chosen the
+    hyperparameters and the outer fold has to be scored exactly once.
+
+    Written here rather than in the tuning script on purpose. Scoring a fold by hand means
+    re-deriving which column of `predict_proba` holds the positive class, and getting that
+    wrong produces numbers in [0, 1] that look entirely reasonable while describing the
+    other class. There is one implementation of that lookup and this shares it.
+
+    Args:
+        estimator: A classifier exposing `predict_proba`.
+        train_features: Predictors to fit on.
+        train_target: Labels to fit on.
+        score_features: Predictors to score.
+        score_target: Labels to score against.
+        preprocessor_factory: Builds the unfitted preprocessor, fitted here on the training
+            rows only.
+
+    Returns:
+        Every reported metric on the held-out set.
+    """
+    pipeline = build_fold_pipeline(estimator, preprocessor_factory)
+    pipeline.fit(train_features, train_target)
+
+    classifier = terminal_estimator(pipeline.named_steps[MODEL_STEP])
+    column = _positive_class_column(classifier.classes_)
+    scores = pipeline.predict_proba(score_features)[:, column]
+    return compute_metrics(score_target.to_numpy(), scores)
+
+
+@dataclass(frozen=True)
+class Comparison:
+    """One measurement read against a reference, with the verdict spelled out.
+
+    Attributes:
+        label: Name of the measurement being judged.
+        value: Its mean of the metric across folds.
+        reference_value: The reference's mean of the same metric.
+        difference: `value - reference_value`.
+        spread: Standard deviation across folds of the measurement being judged, which is
+            the scale the difference has to be read against.
+        threshold: The difference this protocol requires before calling it a difference.
+        clears_threshold: Whether `abs(difference)` reached `threshold`.
+    """
+
+    label: str
+    value: float
+    reference_value: float
+    difference: float
+    spread: float
+    threshold: float
+    clears_threshold: bool
+
+    @property
+    def verdict(self) -> str:
+        """One-line reading of the difference, in the vocabulary the reports use.
+
+        Returns:
+            A short phrase saying whether the gap is resolvable and in which direction.
+        """
+        if not self.clears_threshold:
+            return f"within noise (< {self.threshold:.2f})"
+        return "better than reference" if self.difference > 0 else "worse than reference"
+
+
+def compare_to_reference(
+    label: str,
+    result: CrossValidationResult,
+    reference: CrossValidationResult,
+    metric: str = DECISION_METRIC,
+    threshold: float = PRACTICAL_SIGNIFICANCE_THRESHOLD,
+) -> Comparison:
+    """Judge one measurement against a reference on the decision metric.
+
+    Every comparison in the project goes through here, so that no report can quote a
+    difference without the spread beside it and without saying whether the threshold was
+    reached. The rule is applied by the code rather than remembered by the author.
+
+    Args:
+        label: Name of the measurement being judged.
+        result: The measurement.
+        reference: What it is being compared against, measured on the same folds.
+        metric: Metric to compare on. Defaults to the decision metric of ADR-0002.
+        threshold: Smallest difference worth calling a difference.
+
+    Returns:
+        The difference, the spread it has to be read against, and the verdict.
+    """
+    value = result.means[metric]
+    reference_value = reference.means[metric]
+    difference = value - reference_value
+    return Comparison(
+        label=label,
+        value=value,
+        reference_value=reference_value,
+        difference=difference,
+        spread=result.stds[metric],
+        threshold=threshold,
+        clears_threshold=abs(difference) >= threshold,
+    )
+
+
+def format_comparison_verdicts(comparisons: Sequence[Comparison], metric: str) -> str:
+    """Render a set of comparisons as a table, difference and verdict together.
+
+    Args:
+        comparisons: The comparisons, in row order.
+        metric: Name of the metric being compared, for the heading.
+
+    Returns:
+        A plain-text table, without a trailing newline.
+    """
+    header = (
+        f"{'model':<28}{metric:>12}{'std':>10}{'reference':>12}{'difference':>13}{'verdict':>28}"
+    )
+    lines = [header, "-" * len(header)]
+    for item in comparisons:
+        lines.append(
+            f"{item.label:<28}{item.value:>12.4f}{item.spread:>10.4f}"
+            f"{item.reference_value:>12.4f}{item.difference:>+13.4f}{item.verdict:>28}"
+        )
+    return "\n".join(lines)
+
+
+def _loggable_params(estimator: BaseEstimator) -> Mapping[str, str]:
+    """Flatten an estimator's parameters into strings MLflow will accept.
+
+    Every value is stringified rather than filtered by type: a parameter MLflow could not
+    serialise would otherwise vanish from the run, and a run that silently records fewer
+    parameters than the model has is not a reproducible record of it.
+
+    Args:
+        estimator: The estimator whose configuration is being recorded.
+
+    Returns:
+        Prefixed parameter name -> value as text.
+    """
+    return {f"model__{name}": str(value) for name, value in sorted(estimator.get_params().items())}
+
+
+def evaluate_and_log(
+    estimator: BaseEstimator,
+    features: pd.DataFrame,
+    target: pd.Series,
+    *,
+    run_name: str,
+    context: ExperimentContext,
+    tags: Mapping[str, str] | None = None,
+    n_splits: int = DEFAULT_N_SPLITS,
+    random_state: int | None = None,
+    preprocessor_factory: PreprocessorFactory = build_preprocessor,
+) -> tuple[CrossValidationResult, str]:
+    """Cross-validate an estimator and record the whole measurement as one MLflow run.
+
+    Recorded as parameters: the estimator's full configuration, the validation protocol and
+    the seed. As metrics: every reported metric's mean and standard deviation across folds,
+    plus the prevalence, so a reader of the run alone still has PR-AUC's floor. As an
+    artefact: the per-fold table, because a mean without its folds cannot be audited.
+
+    Args:
+        estimator: A scikit-learn classifier exposing `predict_proba`.
+        features: Predictors, without the label.
+        target: Binary label sharing the index of `features`.
+        run_name: Name of the run, as it appears in the MLflow interface.
+        context: Experiment the run belongs to, from `tracking.ensure_experiment`.
+        tags: Extra tags. Used to mark a run as a baseline or as a diagnostic.
+        n_splits: Number of folds.
+        random_state: Seed for the splitter. Defaults to `settings.random_state`.
+        preprocessor_factory: Builds the unfitted preprocessor for each fold.
+
+    Returns:
+        The measurement, and the identifier of the run that now holds it.
+    """
+    result = cross_validate_estimator(
+        estimator,
+        features,
+        target,
+        n_splits=n_splits,
+        random_state=random_state,
+        preprocessor_factory=preprocessor_factory,
+    )
+
+    with mlflow.start_run(experiment_id=context.experiment_id, run_name=run_name) as run:
+        mlflow.set_tags(dict(tags or {}))
+        mlflow.log_params(
+            {
+                **_loggable_params(estimator),
+                "estimator": result.estimator_name,
+                "cv_strategy": "StratifiedKFold(shuffle=True)",
+                "cv_n_splits": str(result.n_splits),
+                "random_state": str(result.random_state),
+                "n_samples": str(result.n_samples),
+                "n_raw_columns": str(features.shape[1]),
+                "n_model_features": str(result.n_features),
+                "n_model_features_per_fold": str(list(result.fold_n_features)),
+                "preprocessor_fitted": "once per fold, on the training part only",
+            }
+        )
+
+        means, stds = result.means, result.stds
+        mlflow.log_metrics(
+            {
+                **{f"{name}_mean": means[name] for name in REPORTED_METRIC_NAMES},
+                **{f"{name}_std": stds[name] for name in REPORTED_METRIC_NAMES},
+                "positive_rate": result.positive_rate,
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as staging:
+            artefact = Path(staging) / FOLD_METRICS_ARTEFACT
+            result.summary_frame().to_csv(artefact)
+            mlflow.log_artifact(str(artefact))
+
+        return result, run.info.run_id
+
+
+def format_comparison_table(
+    results: Mapping[str, CrossValidationResult],
+    metric_names: Sequence[str] = REPORTED_METRIC_NAMES,
+) -> str:
+    """Render several measurements side by side as `mean ± std`, one column per model.
+
+    Side by side and not one table each, because the methodology's rule is that a metric is
+    never reported without its baseline: a layout that puts them in separate tables makes it
+    possible to quote one without the other.
+
+    Args:
+        results: Column label -> measurement. Insertion order is column order.
+        metric_names: Metrics to show, in row order.
+
+    Returns:
+        A plain-text table, without a trailing newline.
+    """
+    labels = list(results)
+    width = max((len(label) for label in labels), default=0)
+    column_width = max(width, 17)
+    header = "metric".ljust(24) + "".join(label.rjust(column_width + 2) for label in labels)
+    lines = [header, "-" * len(header)]
+
+    for name in metric_names:
+        cells = []
+        for label in labels:
+            result = results[label]
+            cells.append(
+                f"{result.means[name]:.4f} ± {result.stds[name]:.4f}".rjust(column_width + 2)
+            )
+        lines.append(name.ljust(24) + "".join(cells))
+
+    return "\n".join(lines)
+
+
+def format_fold_table(result: CrossValidationResult, metric_names: Sequence[str]) -> str:
+    """Render one measurement's per-fold values, so a mean can be audited against its folds.
+
+    Args:
+        result: The measurement.
+        metric_names: Metrics to show, in column order.
+
+    Returns:
+        A plain-text table, without a trailing newline.
+    """
+    frame = result.summary_frame()[list(metric_names)]
+    with pd.option_context("display.width", 200, "display.max_columns", None):
+        return str(frame.round(6).to_string(float_format=lambda value: f"{value:.6f}"))
+
+
+def null_reference(result: CrossValidationResult) -> Mapping[str, float]:
+    """The value each metric takes when the scores carry no information about the label.
+
+    This is the floor every number in `result` is read against, and it is not the same
+    constant for every metric: ranking metrics that use precision sit at the prevalence,
+    ROC-AUC sits at 0.5 whatever the balance, and a Brier score from a constant prediction
+    of the prevalence is `p(1-p)`.
+
+    Args:
+        result: A measurement, read only for its prevalence and nothing else.
+
+    Returns:
+        Metric name -> its value under a ranking that carries no signal.
+    """
+    prevalence = result.positive_rate
+    return {
+        "pr_auc": prevalence,
+        "roc_auc": 0.5,
+        "ks": 0.0,
+        "gini": 0.0,
+        "brier": float(prevalence * (1.0 - prevalence)),
+        "precision_at_top_10pct": prevalence,
+        "precision_at_top_5pct": prevalence,
+        "accuracy": float(np.max([prevalence, 1.0 - prevalence])),
+    }
