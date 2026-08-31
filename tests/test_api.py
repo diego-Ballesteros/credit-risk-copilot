@@ -239,6 +239,18 @@ def recorded_run(**overrides: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def start_model_load_with(holder: AppState, load: Any) -> Any:
+    """Start a background load with a substituted loader.
+
+    `start_model_load` is `_start_load` bound to the real loader; the tests need the same
+    machinery bound to a double, so they call the same private starter rather than
+    reimplementing thread management they would then be testing instead of the real one.
+    """
+    from credit_copilot.api.dependencies import _start_load
+
+    return _start_load(holder, "model", load, "model")
+
+
 @pytest.fixture
 def scorer() -> StubScorer:
     """A scorer that counts how many times the model was actually reached."""
@@ -254,8 +266,9 @@ def model_client(scorer: StubScorer) -> Any:
         validation=ValidationMetrics(run_id="run-stub", metrics=dict(REGISTRY_METRICS)),
         tracking_uri="https://dagshub.example/mlflow",
     )
-    app = model_app.create_app(AppState(model=ModelServiceState(service=service)))
-    app.dependency_overrides[get_model_state] = lambda: ModelServiceState(service=service)
+    state = ModelServiceState(phase="ready", service=service, elapsed_seconds=1.5)
+    app = model_app.create_app(AppState(model=state))
+    app.dependency_overrides[get_model_state] = lambda: state
     with TestClient(app) as client:
         yield client
 
@@ -263,7 +276,9 @@ def model_client(scorer: StubScorer) -> Any:
 @pytest.fixture
 def unloaded_model_client() -> Any:
     """A client over a model application whose registry could not be reached at start-up."""
-    state = ModelServiceState(service=None, error="Could not load models:/x/1: ConnectionError")
+    state = ModelServiceState(
+        phase="degraded", error="Could not load models:/x/1: ConnectionError", elapsed_seconds=263.2
+    )
     app = model_app.create_app(AppState(model=state))
     app.dependency_overrides[get_model_state] = lambda: state
     with TestClient(app) as client:
@@ -272,7 +287,9 @@ def unloaded_model_client() -> Any:
 
 def agent_client(runner: StubRunner) -> TestClient:
     """Build a client over the agent application, wired to a replayed run."""
-    state = AgentServiceState(runner=runner, default_max_iterations=3, model_loaded=True)
+    state = AgentServiceState(
+        phase="ready", runner=runner, default_max_iterations=3, model_loaded=True
+    )
     app = agent_app.create_app(AppState(agent=state))
     app.dependency_overrides[get_agent_state] = lambda: state
     return TestClient(app)
@@ -515,8 +532,141 @@ def test_health_reports_ok_when_the_artefact_is_loaded(model_client: TestClient)
     body = model_client.get("/health").json()
 
     assert body["status"] == "ok"
+    assert body["phase"] == "ready"
     assert body["model_loaded"] is True
     assert body["detail"] is None
+    assert body["load_seconds"] == 1.5
+
+
+# ---------------------------------------------------------------------------
+# The three load phases, which is what ADR-0010 decision 3 bought
+# ---------------------------------------------------------------------------
+
+
+def _client_in_phase(state: ModelServiceState) -> TestClient:
+    """Build a model application pinned to one loader phase."""
+    app = model_app.create_app(AppState(model=state))
+    app.dependency_overrides[get_model_state] = lambda: state
+    return TestClient(app)
+
+
+def test_health_answers_200_while_still_loading_because_loading_is_not_unhealthy() -> None:
+    """The container healthcheck reads this. A restart here would restart the load."""
+    with _client_in_phase(ModelServiceState(phase="loading")) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "starting"
+    assert body["phase"] == "loading"
+    assert body["model_loaded"] is False
+    assert body["detail"] is None, "there is no failure to report while it is still working"
+    assert body["load_seconds"] is None
+
+
+def test_loading_and_degraded_are_two_different_503s() -> None:
+    """'Not yet' and 'it could not' are different instructions to whoever is on call."""
+    with _client_in_phase(ModelServiceState(phase="loading")) as client:
+        loading = client.post("/predict", json={"applicant": APPLICANT})
+    degraded_state = ModelServiceState(phase="degraded", error="ConnectionError to the registry")
+    with _client_in_phase(degraded_state) as client:
+        degraded = client.post("/predict", json={"applicant": APPLICANT})
+
+    assert loading.status_code == 503
+    assert loading.json()["error"]["type"] == "model_loading"
+    assert loading.headers["Retry-After"] == "5"
+    assert "reintenta" in loading.json()["error"]["message"]
+
+    assert degraded.status_code == 503
+    assert degraded.json()["error"]["type"] == "model_unavailable"
+    assert "Retry-After" not in degraded.headers, (
+        "a service that has finished failing must not invite a client to poll it"
+    )
+    assert "ConnectionError" in degraded.json()["error"]["message"]
+
+    for response in (loading, degraded):
+        assert "probability_of_default" not in response.text
+
+
+def test_ready_is_the_gate_and_health_is_the_report() -> None:
+    phases = {
+        "loading": ModelServiceState(phase="loading"),
+        "degraded": ModelServiceState(phase="degraded", error="registry down"),
+    }
+    for name, state in phases.items():
+        with _client_in_phase(state) as client:
+            assert client.get("/health").status_code == 200, name
+            assert client.get("/ready").status_code == 503, name
+
+
+def test_ready_answers_200_once_the_artefact_is_in_memory(model_client: TestClient) -> None:
+    response = model_client.get("/ready")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is True
+    assert body["phase"] == "ready"
+    assert body["service"] == "model"
+
+
+def test_the_agent_reports_the_same_three_phases() -> None:
+    runner = StubRunner(recorded_run())
+    states = {
+        "loading": AgentServiceState(phase="loading"),
+        "degraded": AgentServiceState(phase="degraded", error="no API key"),
+        "ready": AgentServiceState(phase="ready", runner=runner, model_loaded=True),
+    }
+    seen = {}
+    for name, state in states.items():
+        app = agent_app.create_app(AppState(agent=state))
+        app.dependency_overrides[get_agent_state] = lambda state=state: state
+        with TestClient(app) as client:
+            seen[name] = (client.get("/health").json(), client.get("/ready").status_code)
+
+    assert seen["loading"][0]["status"] == "starting"
+    assert seen["degraded"][0]["status"] == "degraded"
+    assert seen["ready"][0]["status"] == "ok"
+    assert (seen["loading"][1], seen["degraded"][1], seen["ready"][1]) == (503, 503, 200)
+
+
+def test_the_lifespan_does_not_block_on_the_load() -> None:
+    """The regression test for the 263-second start-up: the server must serve immediately.
+
+    The loader is replaced with one that sleeps far longer than any acceptable start-up. If
+    the load were still inside the lifespan, `TestClient.__enter__` would not return until it
+    finished and this test would hang rather than fail - which is why the sleep is bounded and
+    the assertion is on elapsed time.
+    """
+    import time as _time
+
+    started = _time.perf_counter()
+
+    def _slow_load() -> ModelServiceState:
+        _time.sleep(30)
+        return ModelServiceState(phase="degraded", error="never reached")
+
+    holder = AppState()
+    thread = start_model_load_with(holder, _slow_load)
+    app = model_app.create_app(holder)
+    with TestClient(app) as client:
+        elapsed = _time.perf_counter() - started
+        body = client.get("/health").json()
+
+    assert elapsed < 5.0, f"start-up blocked for {elapsed:.1f}s; the load is not in the background"
+    assert body["phase"] == "loading"
+    assert thread.is_alive(), "the loader is still working while the service answers"
+
+
+def test_the_background_loader_publishes_its_outcome() -> None:
+    holder = AppState()
+    expected = ModelServiceState(phase="degraded", error="registry refused the connection")
+
+    thread = start_model_load_with(holder, lambda: expected)
+    thread.join(timeout=10)
+
+    assert not thread.is_alive()
+    assert holder.model is expected
+    assert holder.model.phase == "degraded"
 
 
 # ---------------------------------------------------------------------------
@@ -629,7 +779,7 @@ def test_chat_passes_the_applicant_through_the_same_data_contract() -> None:
 
 
 def test_chat_without_the_copilot_loaded_is_503() -> None:
-    state = AgentServiceState(runner=None, error="CopilotConfigurationError: no API key")
+    state = AgentServiceState(phase="degraded", error="CopilotConfigurationError: no API key")
     app = agent_app.create_app(AppState(agent=state))
     app.dependency_overrides[get_agent_state] = lambda: state
     with TestClient(app) as client:

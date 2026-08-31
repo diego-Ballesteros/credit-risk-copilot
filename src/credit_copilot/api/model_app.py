@@ -21,7 +21,7 @@ probability without the 23 attributes being present, known and inside their plau
 ranges.** A refusal names the field. It never returns a number.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from typing import Annotated, Final
 
@@ -29,7 +29,12 @@ from fastapi import Depends, FastAPI
 
 from credit_copilot import __version__
 from credit_copilot.api import dependencies
-from credit_copilot.api.dependencies import AppState, ModelServiceState, get_model_state
+from credit_copilot.api.dependencies import (
+    AppState,
+    LoadPhase,
+    ModelServiceState,
+    get_model_state,
+)
 from credit_copilot.api.schemas import (
     DecisionContext,
     ErrorResponse,
@@ -37,11 +42,13 @@ from credit_copilot.api.schemas import (
     ExplainResponse,
     FeatureContributionOut,
     HealthResponse,
+    HealthStatus,
     MetricWithBaseline,
     ModelIdentity,
     ModelInfoResponse,
     PredictRequest,
     PredictResponse,
+    ReadinessResponse,
     SimulateRequest,
     SimulateResponse,
     ValidationSummary,
@@ -57,6 +64,19 @@ dependency is part of the type and not a mutable argument default."""
 
 SERVICE_NAME: Final[str] = "model"
 """Name this application logs under and reports in `/health`."""
+
+_STATUS_BY_PHASE: Final[Mapping[LoadPhase, HealthStatus]] = {
+    "loading": "starting",
+    "ready": "ok",
+    "degraded": "degraded",
+}
+"""Loader phase to the word `/health` reports.
+
+A separate vocabulary because the two audiences differ: `phase` is the loader's own state and
+`status` is what a person reads in a dashboard. They are kept in one map rather than in a
+conditional so that adding a phase without deciding what it looks like from outside is a
+`KeyError` and not a silent default.
+"""
 
 _VALIDATION_PROTOCOL: Final[str] = (
     "StratifiedKFold(5, shuffle=True, random_state=42), con el preprocesador ajustado dentro "
@@ -211,20 +231,24 @@ def _validation_summary(state: ModelServiceState) -> ValidationSummary:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Load the pinned artefact once, before the first request, and never crash the process.
+    """Start loading the pinned artefact and return immediately.
+
+    **The load does not happen here, and that is the point.** Measured: with the registry
+    unreachable the load takes 263 seconds, and a lifespan that has not returned blocks
+    uvicorn from accepting any connection - `/health` included. ADR-0010 decision 3 moves it
+    to a daemon thread so the process serves from the first second and reports its loading
+    state over HTTP instead of by silence.
 
     Args:
         app: The application starting up.
 
     Yields:
-        Control back to the server once the load has been attempted. A failed load leaves the
-        service running and degraded rather than dead; the module docstring of
-        `api/dependencies.py` records why that is the choice here. An application built with
-        an explicit state - which is how the tests build one - has already decided what it
-        holds, so nothing is loaded over it.
+        Control back to the server as soon as the loader thread is running. An application
+        built with an explicit state - which is how the tests build one - has already decided
+        what it holds, so no load is started over it.
     """
     if app.state.autoload:
-        app.state.services.model = dependencies.load_model_service()
+        dependencies.start_model_load(app.state.services)
     yield
 
 
@@ -370,24 +394,53 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/health", response_model=HealthResponse, tags=["operations"])
     def health(state: ModelState) -> HealthResponse:
-        """Report whether the service is up and whether it can actually score.
+        """Report that the process is alive and where its artefact is in its lifecycle.
 
-        The two are separate. This endpoint answers even when the registry could not be
-        reached at start-up, and says so, because *"the process is up but scoring is down"*
-        is the state an operator most needs to be able to distinguish.
+        **Always 200 while the process serves.** This is the container healthcheck's
+        endpoint, and ADR-0010 decision 3 is that a service which is alive but still loading
+        is not unhealthy: marking it so restarts it, which restarts the load, which is the
+        crash loop the whole design exists to avoid. What the caller branches on is `phase`,
+        not the status code. The gate is `/ready`.
 
         Args:
-            state: The model service's state, loaded or not.
+            state: The model service's state, whatever phase it is in.
 
         Returns:
-            The service's readiness, and the reason it is not ready when it is not.
+            The phase, and the reason the load failed when it did.
         """
         return HealthResponse(
             service="model",
-            status="ok" if state.is_ready else "degraded",
+            status=_STATUS_BY_PHASE[state.phase],
+            phase=state.phase,
             version=__version__,
             model_loaded=state.is_ready,
             detail=state.error,
+            load_seconds=state.elapsed_seconds,
+            request_id=dependencies.current_request_id(),
+        )
+
+    @app.get("/ready", response_model=ReadinessResponse, tags=["operations"])
+    def ready(state: ModelState) -> ReadinessResponse:
+        """Answer 200 only when this service can actually score.
+
+        `state.require()` raises, and the two exceptions it can raise are what separates the
+        two failures: `ServiceLoadingError` becomes 503 `model_loading` with a `Retry-After`,
+        and `ModelUnavailableError` becomes 503 `model_unavailable` with the reason. Calling
+        it rather than re-deriving the condition here is what keeps `/ready` and `/predict`
+        from ever disagreeing about whether the service is up.
+
+        Args:
+            state: The model service's state.
+
+        Returns:
+            The readiness of the service, when it is ready.
+        """
+        state.require()
+        return ReadinessResponse(
+            service="model",
+            ready=True,
+            phase=state.phase,
+            load_seconds=state.elapsed_seconds,
             request_id=dependencies.current_request_id(),
         )
 

@@ -26,7 +26,12 @@ from fastapi import Depends, FastAPI
 
 from credit_copilot import __version__
 from credit_copilot.api import dependencies
-from credit_copilot.api.dependencies import AgentServiceState, AppState, get_agent_state
+from credit_copilot.api.dependencies import (
+    AgentServiceState,
+    AppState,
+    LoadPhase,
+    get_agent_state,
+)
 from credit_copilot.api.schemas import (
     ChatRequest,
     ChatResponse,
@@ -34,6 +39,8 @@ from credit_copilot.api.schemas import (
     DecisionContext,
     ErrorResponse,
     HealthResponse,
+    HealthStatus,
+    ReadinessResponse,
     TokenUsageOut,
     ToolInvocation,
 )
@@ -45,6 +52,14 @@ AgentState = Annotated[AgentServiceState, Depends(get_agent_state)]
 
 SERVICE_NAME: Final[str] = "agent"
 """Name this application logs under and reports in `/health`."""
+
+_STATUS_BY_PHASE: Final[Mapping[LoadPhase, HealthStatus]] = {
+    "loading": "starting",
+    "ready": "ok",
+    "degraded": "degraded",
+}
+"""Loader phase to the word `/health` reports. Same map as the model service's, on purpose:
+an operator looking at two dashboards must not have to learn two vocabularies."""
 
 _OUTCOME_MEANINGS: Final[dict[str, str]] = {
     "answered": "El evaluador juzgó que la evidencia reunida alcanzaba para responder con citas.",
@@ -198,13 +213,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         app: The application starting up.
 
     Yields:
-        Control back to the server once the load has been attempted. A missing API key, an
-        unreachable registry or an unbuilt index leave the service running and degraded, with
-        `/health` naming the reason and `/chat` answering 503. An application built with an
-        explicit state loads nothing, which is how the tests run without an API key.
+        Control back to the server as soon as the loader thread is running. The copilot's
+        build is the slower of the two - registry artefact, embedding model and Chroma index -
+        so the reason of ADR-0010 decision 3 applies to it with more force than to the model
+        service. A missing API key, an unreachable registry or an unbuilt index leave the
+        service running and `degraded`, with `/health` naming the reason and `/chat`
+        answering 503. An application built with an explicit state loads nothing, which is
+        how the tests run without an API key.
     """
     if app.state.autoload:
-        app.state.services.agent = dependencies.load_agent_service()
+        dependencies.start_agent_load(app.state.services)
     yield
 
 
@@ -289,22 +307,46 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/health", response_model=HealthResponse, tags=["operations"])
     def health(state: AgentState) -> HealthResponse:
-        """Report whether the copilot is up and whether it can actually answer.
+        """Report that the process is alive and where the copilot is in its lifecycle.
+
+        Always 200 while the process serves; see the model service's `/health` and ADR-0010
+        decision 3 for why a loading service is not an unhealthy one. A copilot that could
+        not build its tool context is running and cannot answer, and those are two different
+        facts that `phase` keeps apart.
 
         Args:
-            state: The agent service's state, loaded or not.
+            state: The agent service's state, whatever phase it is in.
 
         Returns:
-            The service's readiness, and the reason it is not ready when it is not. A copilot
-            that could not build its tool context is running and cannot answer, and those are
-            two different facts.
+            The phase, and the reason the build failed when it did.
         """
         return HealthResponse(
             service="agent",
-            status="ok" if state.is_ready else "degraded",
+            status=_STATUS_BY_PHASE[state.phase],
+            phase=state.phase,
             version=__version__,
             model_loaded=state.model_loaded,
             detail=state.error,
+            load_seconds=state.elapsed_seconds,
+            request_id=dependencies.current_request_id(),
+        )
+
+    @app.get("/ready", response_model=ReadinessResponse, tags=["operations"])
+    def ready(state: AgentState) -> ReadinessResponse:
+        """Answer 200 only when the copilot can actually answer a query.
+
+        Args:
+            state: The agent service's state.
+
+        Returns:
+            The readiness of the service, when it is ready.
+        """
+        state.require()
+        return ReadinessResponse(
+            service="agent",
+            ready=True,
+            phase=state.phase,
+            load_seconds=state.elapsed_seconds,
             request_id=dependencies.current_request_id(),
         )
 

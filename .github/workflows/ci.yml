@@ -29,8 +29,13 @@ jobs:
           cache-dependency-glob: "uv.lock"
           python-version: "3.11"
 
+      # Plain `uv sync`, deliberately. Since the dependency split of ADR-0010 the base set is
+      # what the MODEL image installs, and `agent`, `research` and `dev` are dependency
+      # groups that `tool.uv.default-groups` marks as default - so a bare sync gives CI the
+      # complete environment, exactly as it gives a contributor one. The images are the ones
+      # that opt out, with `--no-default-groups`.
       - name: Sync environment
-        run: uv sync --dev
+        run: uv sync
 
       - name: Ruff (lint)
         run: uv run ruff check .

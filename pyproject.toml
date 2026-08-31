@@ -4,22 +4,19 @@ version = "0.1.0"
 description = "Credit risk scoring (probability of default) with an agentic copilot on top of the model."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
+# The base set is exactly what the MODEL service needs to serve a probability, an
+# attribution and a counterfactual. It is not a taste judgement: `docker/Dockerfile.model`
+# installs this list and nothing else, and the two-image split of ADR-0010 is what makes
+# the boundary load-bearing. Anything added here is added to the model image.
 dependencies = [
-    "anthropic>=1.2.0",
-    "chromadb>=1.5.9",
     "fastapi>=0.115",
-    "imbalanced-learn>=0.14.2",
     "joblib>=1.4",
-    "langgraph>=1.2.11",
-    "lightgbm>=4.7.0",
     "mlflow>=3.15.2",
-    "optuna>=4.9.0",
     "pandas>=2.2",
     "pyarrow>=16.0",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "scikit-learn>=1.5",
-    "sentence-transformers>=6.0.0",
     "shap>=0.51.0",
     "ucimlrepo>=0.0.7",
     "uvicorn>=0.30",
@@ -32,6 +29,16 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/credit_copilot"]
 
+# ---------------------------------------------------------------------------
+# The three sets that are NOT in the model image
+# ---------------------------------------------------------------------------
+# Dependency groups (PEP 735) and not `optional-dependencies`, and the reason is a measured
+# one rather than a preference. Extras are not installed by a bare `uv sync`, and this uv
+# has no `default-extras` setting to change that - verified: after declaring them as extras,
+# `uv sync` uninstalled the whole copilot stack and `uv run python scripts/...` would have
+# broken every reproduction command `docs/EVALUATION.md` documents. Groups have
+# `tool.uv.default-groups` below, so a developer's environment stays complete while each
+# image installs exactly what it needs with `--no-default-groups`.
 [dependency-groups]
 dev = [
     "httpx>=0.27",
@@ -44,6 +51,36 @@ dev = [
     "matplotlib>=3.9",
     "nbconvert>=7.16",
 ]
+
+# What the COPILOT needs on top of the base set, and nothing else needs at all. Measured on
+# the development environment: torch 468 MB, chromadb 64 MB, transformers 52 MB, langgraph
+# 7.6 MB, anthropic 7.3 MB, sentence-transformers 4.6 MB - about 604 MB that a request for
+# `P(default)` would otherwise pay for and never call. `docker/Dockerfile.agent` installs
+# this group; `docker/Dockerfile.model` installs none.
+agent = [
+    "anthropic>=1.2.0",
+    "chromadb>=1.5.9",
+    "langgraph>=1.2.11",
+    "sentence-transformers>=6.0.0",
+]
+
+# What only the phase-2 measurement scripts import. Nothing under `src/` reaches for any of
+# these, so neither image installs them; `scripts/run_tuning.py` and
+# `scripts/run_imbalance_comparison.py` do. `lightgbm` is here because it is declared and
+# **no module in this repository imports it** - see the turn report; removing it is a
+# decision for the architect, not a move for the executor.
+research = [
+    "imbalanced-learn>=0.14.2",
+    "lightgbm>=4.7.0",
+    "optuna>=4.9.0",
+]
+
+[tool.uv]
+# What a bare `uv sync` and every `uv run` install. All of them, so that a contributor gets a
+# complete environment and the reproduction commands in `docs/EVALUATION.md` keep working.
+# The images opt out with `--no-default-groups` and then name only what they need, which is
+# what makes the split a property of the build rather than of somebody's memory.
+default-groups = ["dev", "agent", "research"]
 
 # ---------------------------------------------------------------------------
 # Ruff

@@ -1,27 +1,43 @@
 """Artefact lifecycle, correlation identifiers, structured logging and error translation.
 
-**Why the artefact loads once, at start-up.** Loading a registry version downloads it, and
-building a `TreeExplainer` walks 300 trees. Doing either per request would put a network
-round trip and a few hundred milliseconds of tree walking in front of every probability, and
-- worse - would make two requests capable of scoring against two different downloads. One
-load, at start-up, held in `app.state`, is what makes the number this service returns the
-number `docs/MODEL_CARD.md` describes.
+**Why the artefact loads once, and why not inside the lifespan.** Loading a registry version
+downloads it, and building a `TreeExplainer` walks 300 trees. Doing either per request would
+put a network round trip in front of every probability and would let two requests score
+against two different downloads. So it happens once. It does **not** happen inside the ASGI
+lifespan, and that is decision 3 of ADR-0010, taken on a measurement: with the registry
+unreachable, the load takes **263 seconds** because the MLflow client retries with
+exponential backoff, and a lifespan that has not returned blocks uvicorn from accepting any
+connection at all - `/health` included. The symptom is a container that answers nothing for
+four and a half minutes, with no exception and no error line to explain it. A container
+healthcheck with a grace period shorter than that retry budget would restart the service and
+produce a crash loop **caused by the healthcheck**, whose visible symptom would be "the
+container will not start" rather than "the registry is down".
 
-**What happens when the registry is not available at start-up, and why the process does not
-die.** `load_model_service` never raises. If MLflow is unreachable, unconfigured or has no
-such version, it returns a state carrying the reason and no artefact. The application still
-starts, `/health` answers `degraded` and says `model_loaded: false` with the reason, and every
-endpoint that needs the artefact answers **503 Service Unavailable** naming the same reason.
+**So the load runs on a daemon thread and the process serves immediately.** The lifespan
+starts the thread and returns. Three states follow, and the API distinguishes all three
+because collapsing them loses the two questions an operator actually asks:
 
-Refusing to start would be the other defensible choice and it is worse here for two reasons.
-A container that exits at boot reports its failure only in the orchestrator's logs, whereas a
-process that stays up answers the question *"why is scoring down?"* to anyone who can reach
-`/health` - including the load balancer and the next turn's `docker compose`. And the failure
-is frequently transient: a tracking server that is slow to come up would turn into a crash
-loop, while this shape recovers by itself the moment a restart succeeds. **What it must never
-do is degrade quietly**, which is why no endpoint falls back to a rebuilt pipeline: a
-refitted forest is a different object from the one phase 2 measured, and answering with it
-would be answering with a number no document describes.
+- `loading` - the thread is still working. Endpoints that need the artefact answer **503**
+  with `model_loading` and a `Retry-After`. This is *"not yet"*.
+- `ready` - the artefact is in memory.
+- `degraded` - the load finished and failed. Endpoints answer **503** with
+  `model_unavailable` and the reason. This is *"it could not"*, which is a different fact
+  and a different operator response.
+
+**Why a thread and not an asyncio task.** The work is blocking and synchronous - an HTTP
+download inside MLflow's own client, a `skops` deserialisation, and 300 trees walked by
+SHAP. Scheduled on the event loop it would block every request for the duration, which is
+the bug this design exists to remove, moved from start-up into steady state.
+
+**Why no lock guards the state.** `ModelServiceState` is frozen, so the loader thread never
+mutates what a request handler is reading: it builds a complete new state and rebinds one
+attribute of `AppState`. Attribute rebinding is atomic under the GIL, so a reader sees either
+the whole old state or the whole new one, never a half-written one. The immutability is the
+synchronisation.
+
+**What it must never do is degrade quietly**, which is why no endpoint falls back to a
+rebuilt pipeline: a refitted forest is a different object from the one phase 2 measured, and
+answering with it would be answering with a number no document describes.
 
 **Why the agent's imports happen inside a function.** `model_app` imports this module. If the
 graph, the tools or the vector store were imported at module level, `anthropic`, `langgraph`,
@@ -41,13 +57,14 @@ import json
 import logging
 import re
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Final, Protocol
+from typing import Any, Final, Literal, Protocol
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -67,12 +84,15 @@ from credit_copilot.models.registry import (
 )
 
 __all__ = [
+    "LOADING_RETRY_AFTER_SECONDS",
     "REQUEST_ID_HEADER",
     "AgentRunner",
     "AgentServiceState",
     "AppState",
+    "LoadPhase",
     "ModelService",
     "ModelServiceState",
+    "ServiceLoadingError",
     "ValidationMetrics",
     "app_state",
     "configure_logging",
@@ -83,7 +103,34 @@ __all__ = [
     "install_request_context",
     "load_agent_service",
     "load_model_service",
+    "start_agent_load",
+    "start_model_load",
 ]
+
+LoadPhase = Literal["loading", "ready", "degraded"]
+"""Where a service's artefacts are in their lifecycle.
+
+Three values and not a boolean, because `loading` and `degraded` answer different operator
+questions - *"wait"* against *"go look at the registry"* - and a single `ready: false` would
+merge them into the one word that helps nobody.
+"""
+
+LOADING_RETRY_AFTER_SECONDS: Final[int] = 5
+"""`Retry-After` sent with a 503 that means *not yet*.
+
+Only the `loading` phase carries it. A `degraded` service has finished failing, and telling a
+client to come back in five seconds would be telling it to poll a fault that needs a human.
+"""
+
+
+class ServiceLoadingError(RuntimeError):
+    """The artefacts are still loading. Distinct from having failed to load.
+
+    A separate type rather than a flag on `ModelUnavailableError`, because the two produce
+    different HTTP responses and the handler that separates them should not have to read a
+    boolean to know which is which.
+    """
+
 
 REQUEST_ID_HEADER: Final[str] = "X-Request-ID"
 """Header the correlation identifier arrives in and leaves in."""
@@ -293,7 +340,11 @@ def _reasons_of(error: RequestValidationError | ValidationError) -> str:
 
 
 def _error_response(
-    status_code: int, error_type: str, message: str, fields: tuple[str, ...] = ()
+    status_code: int,
+    error_type: str,
+    message: str,
+    fields: tuple[str, ...] = (),
+    retry_after: int | None = None,
 ) -> JSONResponse:
     """Render one failure in the single envelope both applications use."""
     body = ErrorResponse(
@@ -304,10 +355,13 @@ def _error_response(
             request_id=_request_id.get(),
         )
     )
+    headers = {REQUEST_ID_HEADER: _request_id.get()}
+    if retry_after is not None:
+        headers["Retry-After"] = str(retry_after)
     return JSONResponse(
         status_code=status_code,
         content=body.model_dump(mode="json"),
-        headers={REQUEST_ID_HEADER: _request_id.get()},
+        headers=headers,
     )
 
 
@@ -377,6 +431,19 @@ def install_error_handlers(app: FastAPI, service: str) -> None:
         logger.error("request.failed", extra={"context": {"reason": "explanation_failed"}})
         return _error_response(422, "explanation_unavailable", str(error))
 
+    @app.exception_handler(ServiceLoadingError)
+    async def _on_loading(_: Request, error: ServiceLoadingError) -> JSONResponse:
+        # INFO and not ERROR: a request that arrived during start-up is an expected event,
+        # and logging it as an error would put a red line in the log for every probe that
+        # beat the loader thread. The `degraded` handler below is the one that is an error.
+        logger.info("request.deferred", extra={"context": {"reason": "model_loading"}})
+        return _error_response(
+            503,
+            "model_loading",
+            str(error),
+            retry_after=LOADING_RETRY_AFTER_SECONDS,
+        )
+
     @app.exception_handler(ModelUnavailableError)
     async def _on_model_unavailable(_: Request, error: ModelUnavailableError) -> JSONResponse:
         logger.error("request.failed", extra={"context": {"reason": "model_unavailable"}})
@@ -441,15 +508,23 @@ class ModelService:
 
 @dataclass(frozen=True)
 class ModelServiceState:
-    """The outcome of trying to load the model service. Never an exception.
+    """Where the model service's artefacts are, and why. Never an exception.
+
+    Frozen on purpose: the loader thread publishes a **new** instance rather than mutating
+    this one, so a request handler reading it concurrently sees a complete state. See the
+    module docstring on why that is the whole of the synchronisation.
 
     Attributes:
-        service: The loaded artefacts, or `None` when the load failed.
-        error: Why it failed. `None` when it did not.
+        phase: `loading`, `ready` or `degraded`.
+        service: The loaded artefacts. `None` unless `phase` is `ready`.
+        error: Why the load failed. `None` unless `phase` is `degraded`.
+        elapsed_seconds: How long the load took, once it finished. `None` while loading.
     """
 
+    phase: LoadPhase = "loading"
     service: ModelService | None = None
     error: str | None = None
+    elapsed_seconds: float | None = None
 
     @property
     def is_ready(self) -> bool:
@@ -461,22 +536,32 @@ class ModelServiceState:
         return self.service is not None
 
     def require(self) -> ModelService:
-        """Return the loaded service, or refuse the request.
+        """Return the loaded service, or refuse the request with the right reason.
 
         Returns:
             The loaded artefacts.
 
         Raises:
-            ModelUnavailableError: The artefact is not loaded. The message carries the
-                reason the load failed, so a caller does not have to read the service's log
-                to find out why scoring is down.
+            ServiceLoadingError: The load is still running. **Not yet**: the caller should
+                retry, and the response carries `Retry-After`.
+            ModelUnavailableError: The load finished and failed. **It could not**: retrying
+                will not help until whoever operates the registry acts. The message carries
+                the reason, so a caller does not have to read the service's log to find out
+                why scoring is down.
         """
-        if self.service is None:
-            raise ModelUnavailableError(
-                "El modelo productivo no está cargado, así que este servicio no puede "
-                f"devolver una probabilidad. Motivo del fallo al arrancar: {self.error}"
+        if self.service is not None:
+            return self.service
+        if self.phase == "loading":
+            raise ServiceLoadingError(
+                "El modelo productivo todavía se está cargando desde el MLflow Model "
+                "Registry, así que este servicio aún no puede devolver una probabilidad. "
+                "No es un fallo: reintenta. El endpoint /health informa el estado de carga "
+                "y /ready responde 200 en cuanto el artefacto esté en memoria."
             )
-        return self.service
+        raise ModelUnavailableError(
+            "El modelo productivo no se pudo cargar, así que este servicio no puede "
+            f"devolver una probabilidad. Motivo del fallo: {self.error}"
+        )
 
 
 def _read_validation_metrics(model: RegisteredModel) -> ValidationMetrics:
@@ -509,24 +594,33 @@ def _read_validation_metrics(model: RegisteredModel) -> ValidationMetrics:
 
 
 def load_model_service() -> ModelServiceState:
-    """Load the pinned artefact and its explainer. Never raises.
+    """Load the pinned artefact and its explainer, synchronously. Never raises.
+
+    Called on the loader thread by `start_model_load`, and directly by anything that wants
+    to measure the load - `tests/test_api.py` does. It blocks for as long as the registry
+    takes, which is the whole reason it is not called from the lifespan.
 
     Returns:
-        A state carrying the loaded artefacts, or the reason they could not be loaded. See
-        the module docstring for why a registry that is unreachable at start-up degrades the
-        service instead of stopping the process.
+        A `ready` state carrying the loaded artefacts, or a `degraded` state carrying the
+        reason they could not be loaded.
     """
     logger = configure_logging("model")
+    started = time.perf_counter()
+
+    def failed(reason: str) -> ModelServiceState:
+        elapsed = round(time.perf_counter() - started, 3)
+        logger.error(
+            "model.load_failed", extra={"context": {"reason": reason, "elapsed_s": elapsed}}
+        )
+        return ModelServiceState(phase="degraded", error=reason, elapsed_seconds=elapsed)
+
     try:
         model = load_registered_model()
         explainer = ShapLocalExplainer(model)
     except ModelUnavailableError as error:
-        logger.error("model.load_failed", extra={"context": {"reason": str(error)}})
-        return ModelServiceState(service=None, error=str(error))
+        return failed(str(error))
     except Exception as error:  # noqa: BLE001 - loading touches network, disk and pickles
-        reason = f"{type(error).__name__}: {error}"
-        logger.error("model.load_failed", extra={"context": {"reason": reason}})
-        return ModelServiceState(service=None, error=reason)
+        return failed(f"{type(error).__name__}: {error}")
 
     import mlflow  # noqa: PLC0415 - only needed to report where the artefact came from
 
@@ -534,6 +628,7 @@ def load_model_service() -> ModelServiceState:
 
     tracking_uri = redact_uri(str(mlflow.get_tracking_uri() or ""))
     validation = _read_validation_metrics(model)
+    elapsed = round(time.perf_counter() - started, 3)
     logger.info(
         "model.loaded",
         extra={
@@ -541,16 +636,19 @@ def load_model_service() -> ModelServiceState:
                 "model_uri": model.uri,
                 "run_id": validation.run_id,
                 "metrics_read": len(validation.metrics),
+                "elapsed_s": elapsed,
             }
         },
     )
     return ModelServiceState(
+        phase="ready",
         service=ModelService(
             model=model,
             explainer=explainer,
             validation=validation,
             tracking_uri=tracking_uri or None,
-        )
+        ),
+        elapsed_seconds=elapsed,
     )
 
 
@@ -620,21 +718,29 @@ class _GraphRunner:
 
 @dataclass(frozen=True)
 class AgentServiceState:
-    """The outcome of trying to load the agent service. Never an exception.
+    """Where the copilot's collaborators are, and why. Never an exception.
+
+    Frozen for the same reason as `ModelServiceState`, and it matters more here: building the
+    copilot downloads the registry artefact **and** an embedding model and opens a Chroma
+    index, so its load is the slower of the two.
 
     Attributes:
-        runner: The loaded runner, or `None` when the load failed.
-        error: Why it failed. `None` when it did not.
+        phase: `loading`, `ready` or `degraded`.
+        runner: The loaded runner. `None` unless `phase` is `ready`.
+        error: Why the load failed. `None` unless `phase` is `degraded`.
         default_max_iterations: The re-planning cap a request that does not name one runs
             under. Reported in every `/chat` response, because a run that ended with gaps is
             only interpretable next to the cap it ran under.
         model_loaded: Whether the pinned artefact behind the tools is in memory.
+        elapsed_seconds: How long the load took, once it finished. `None` while loading.
     """
 
+    phase: LoadPhase = "loading"
     runner: AgentRunner | None = None
     error: str | None = None
     default_max_iterations: int = 3
     model_loaded: bool = False
+    elapsed_seconds: float | None = None
 
     @property
     def is_ready(self) -> bool:
@@ -646,36 +752,46 @@ class AgentServiceState:
         return self.runner is not None
 
     def require(self) -> AgentRunner:
-        """Return the loaded runner, or refuse the request.
+        """Return the loaded runner, or refuse the request with the right reason.
 
         Returns:
             The runner.
 
         Raises:
-            ModelUnavailableError: The copilot is not loaded. Translated to 503 by the
-                handler installed in `install_error_handlers`.
+            ServiceLoadingError: The copilot is still being built. Translated to 503
+                `model_loading` with a `Retry-After`.
+            ModelUnavailableError: The build finished and failed. Translated to 503
+                `model_unavailable`, with the reason.
         """
-        if self.runner is None:
-            raise ModelUnavailableError(
-                "El copiloto no está cargado, así que este servicio no puede responder una "
-                f"consulta. Motivo del fallo al arrancar: {self.error}"
+        if self.runner is not None:
+            return self.runner
+        if self.phase == "loading":
+            raise ServiceLoadingError(
+                "El copiloto todavía se está construyendo: descargar el artefacto del "
+                "registro, cargar el modelo de embeddings y abrir el índice vectorial toma "
+                "tiempo. No es un fallo: reintenta. /health informa el estado de carga."
             )
-        return self.runner
+        raise ModelUnavailableError(
+            "El copiloto no se pudo construir, así que este servicio no puede responder una "
+            f"consulta. Motivo del fallo: {self.error}"
+        )
 
 
 def load_agent_service() -> AgentServiceState:
-    """Build the copilot's tool context and language-model client. Never raises.
+    """Build the copilot's tool context and language-model client, synchronously.
 
     Every import of the agent stack happens inside this function; see the module docstring
     for why. The failure modes it absorbs are the three that stop the copilot from existing:
     no API key, no registry version, and no vector index.
 
     Returns:
-        A state carrying the runner, or the reason it could not be built.
+        A `ready` state carrying the runner, or a `degraded` state carrying the reason it
+        could not be built.
     """
     logger = configure_logging("agent")
     from credit_copilot.agent.state import DEFAULT_MAX_ITERATIONS  # noqa: PLC0415
 
+    started = time.perf_counter()
     try:
         from credit_copilot.agent.graph import build_client  # noqa: PLC0415
         from credit_copilot.agent.tools import build_tool_context  # noqa: PLC0415
@@ -684,16 +800,28 @@ def load_agent_service() -> AgentServiceState:
         client = build_client()
     except Exception as error:  # noqa: BLE001 - key, registry and index fail in unrelated ways
         reason = f"{type(error).__name__}: {error}"
-        logger.error("agent.load_failed", extra={"context": {"reason": reason}})
+        elapsed = round(time.perf_counter() - started, 3)
+        logger.error(
+            "agent.load_failed", extra={"context": {"reason": reason, "elapsed_s": elapsed}}
+        )
         return AgentServiceState(
-            runner=None, error=reason, default_max_iterations=DEFAULT_MAX_ITERATIONS
+            phase="degraded",
+            error=reason,
+            default_max_iterations=DEFAULT_MAX_ITERATIONS,
+            elapsed_seconds=elapsed,
         )
 
-    logger.info("agent.loaded", extra={"context": {"max_iterations": DEFAULT_MAX_ITERATIONS}})
+    elapsed = round(time.perf_counter() - started, 3)
+    logger.info(
+        "agent.loaded",
+        extra={"context": {"max_iterations": DEFAULT_MAX_ITERATIONS, "elapsed_s": elapsed}},
+    )
     return AgentServiceState(
+        phase="ready",
         runner=_GraphRunner(context, client),
         default_max_iterations=DEFAULT_MAX_ITERATIONS,
         model_loaded=True,
+        elapsed_seconds=elapsed,
     )
 
 
@@ -715,6 +843,60 @@ class AppState:
 
     model: ModelServiceState = field(default_factory=ModelServiceState)
     agent: AgentServiceState = field(default_factory=AgentServiceState)
+
+
+def _start_load(
+    holder: AppState, slot: str, load: Callable[[], Any], service: str
+) -> threading.Thread:
+    """Run one blocking load on a daemon thread and publish its outcome when it finishes.
+
+    Args:
+        holder: The state both the thread and the request handlers reach.
+        slot: Attribute of `holder` the outcome is published into: `model` or `agent`.
+        load: The synchronous loader. It must never raise; both of ours return a state.
+        service: `model` or `agent`, used to name the logger.
+
+    Returns:
+        The started thread. Returned rather than discarded so a test can join it and stop
+        guessing when the load finished.
+
+    The thread is a **daemon**: a load that is still retrying against an unreachable registry
+    must not keep the process alive after uvicorn has been asked to stop. The alternative
+    would make `docker stop` wait out the retry budget it was told to escape.
+    """
+    logger = configure_logging(service)
+
+    def run() -> None:
+        setattr(holder, slot, load())
+
+    logger.info("load.started", extra={"context": {"slot": slot}})
+    thread = threading.Thread(target=run, name=f"{service}-load", daemon=True)
+    thread.start()
+    return thread
+
+
+def start_model_load(holder: AppState) -> threading.Thread:
+    """Begin loading the production artefact without blocking the server.
+
+    Args:
+        holder: The application's state holder.
+
+    Returns:
+        The loader thread.
+    """
+    return _start_load(holder, "model", load_model_service, "model")
+
+
+def start_agent_load(holder: AppState) -> threading.Thread:
+    """Begin building the copilot without blocking the server.
+
+    Args:
+        holder: The application's state holder.
+
+    Returns:
+        The loader thread.
+    """
+    return _start_load(holder, "agent", load_agent_service, "agent")
 
 
 def app_state(request: Request) -> AppState:

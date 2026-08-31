@@ -70,11 +70,13 @@ __all__ = [
     "ExplainResponse",
     "FeatureContributionOut",
     "HealthResponse",
+    "HealthStatus",
     "MetricWithBaseline",
     "ModelIdentity",
     "ModelInfoResponse",
     "PredictRequest",
     "PredictResponse",
+    "ReadinessResponse",
     "SimulateRequest",
     "SimulateResponse",
     "TokenUsageOut",
@@ -89,6 +91,11 @@ Section 4.2 of the internal credit policy requires five. The ceiling exists so t
 cannot ask for an attribution over all 110 transformed features and read the tail - which is
 noise around zero - as if it ranked anything.
 """
+
+
+HealthStatus = Literal["ok", "starting", "degraded"]
+"""What `/health` reports to a person. Exported so the applications map a loader phase onto it
+with a typed table instead of a conditional that no checker can see the holes in."""
 
 
 class _Strict(BaseModel):
@@ -361,27 +368,61 @@ class SimulateResponse(_Strict):
 
 
 class HealthResponse(_Strict):
-    """Whether the service is up, and whether it can actually do its job.
+    """Whether the process is alive, and where its artefacts are in their lifecycle.
 
-    The two are separate on purpose. A process that answers HTTP but could not load its
-    artefact is *running* and not *ready*, and reporting a single boolean would hide which.
+    **This endpoint always answers 200 while the process serves, including while loading and
+    including when the load failed.** It is a *status report*, not a gate: the container
+    healthcheck points here, and ADR-0010 decision 3 is that a service which is alive but
+    still loading is not an unhealthy service - treating it as one is what produces a crash
+    loop caused by the healthcheck. The gate is `/ready`, which is a different endpoint
+    because it answers a different question.
 
     Attributes:
         service: Which of the two applications answered.
-        status: `ok` when the service can serve its endpoints, `degraded` when it is up but
-            its artefacts are not loaded.
+        status: `starting` while the artefacts load, `ok` once they are in memory,
+            `degraded` when the load finished and failed. Three values and not two, because
+            *"wait"* and *"go look at the registry"* are different instructions.
+        phase: The same fact in the loader's own vocabulary - `loading`, `ready`,
+            `degraded` - so a client can branch on it without parsing `status`.
         version: Version of the `credit_copilot` package.
         model_loaded: Whether the pinned registry artefact is in memory. Always reported,
             including by the agent service, whose tools score with it.
         detail: Why the artefact is not loaded, when it is not. `None` when it is.
+        load_seconds: How long the load took, once it finished. `None` while still loading.
         request_id: Correlation identifier.
     """
 
     service: Literal["model", "agent"]
-    status: Literal["ok", "degraded"]
+    status: HealthStatus
+    phase: Literal["loading", "ready", "degraded"]
     version: str
     model_loaded: bool
     detail: str | None = None
+    load_seconds: float | None = None
+    request_id: str
+
+
+class ReadinessResponse(_Strict):
+    """Whether this service can serve its endpoints right now.
+
+    **The gate, as opposed to `/health`'s report.** It answers 200 only when the artefacts
+    are in memory, and 503 otherwise - `model_loading` while the loader thread is working,
+    `model_unavailable` once it has failed. A load balancer, a `depends_on` condition or a
+    smoke test asks this one; a container healthcheck must not, because restarting a service
+    whose registry is unreachable does not make the registry reachable.
+
+    Attributes:
+        service: Which of the two applications answered.
+        ready: Always `true` in a 200 response. A 503 carries the error envelope instead.
+        phase: The loader's phase, for symmetry with `/health`.
+        load_seconds: How long the load took.
+        request_id: Correlation identifier.
+    """
+
+    service: Literal["model", "agent"]
+    ready: bool
+    phase: Literal["loading", "ready", "degraded"]
+    load_seconds: float | None = None
     request_id: str
 
 

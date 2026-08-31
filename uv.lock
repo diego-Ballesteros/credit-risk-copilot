@@ -538,26 +538,28 @@ name = "credit-risk-copilot"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "anthropic" },
-    { name = "chromadb" },
-    { name = "imbalanced-learn" },
+    { name = "fastapi" },
     { name = "joblib" },
-    { name = "langgraph" },
-    { name = "lightgbm" },
     { name = "mlflow" },
-    { name = "optuna" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "scikit-learn" },
-    { name = "sentence-transformers" },
     { name = "shap" },
     { name = "ucimlrepo" },
+    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
+agent = [
+    { name = "anthropic" },
+    { name = "chromadb" },
+    { name = "langgraph" },
+    { name = "sentence-transformers" },
+]
 dev = [
+    { name = "httpx" },
     { name = "ipykernel" },
     { name = "matplotlib" },
     { name = "mypy" },
@@ -567,29 +569,36 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
+research = [
+    { name = "imbalanced-learn" },
+    { name = "lightgbm" },
+    { name = "optuna" },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = ">=1.2.0" },
-    { name = "chromadb", specifier = ">=1.5.9" },
-    { name = "imbalanced-learn", specifier = ">=0.14.2" },
+    { name = "fastapi", specifier = ">=0.115" },
     { name = "joblib", specifier = ">=1.4" },
-    { name = "langgraph", specifier = ">=1.2.11" },
-    { name = "lightgbm", specifier = ">=4.7.0" },
     { name = "mlflow", specifier = ">=3.15.2" },
-    { name = "optuna", specifier = ">=4.9.0" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "pyarrow", specifier = ">=16.0" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pydantic-settings", specifier = ">=2.3" },
     { name = "scikit-learn", specifier = ">=1.5" },
-    { name = "sentence-transformers", specifier = ">=6.0.0" },
     { name = "shap", specifier = ">=0.51.0" },
     { name = "ucimlrepo", specifier = ">=0.0.7" },
+    { name = "uvicorn", specifier = ">=0.30" },
 ]
 
 [package.metadata.requires-dev]
+agent = [
+    { name = "anthropic", specifier = ">=1.2.0" },
+    { name = "chromadb", specifier = ">=1.5.9" },
+    { name = "langgraph", specifier = ">=1.2.11" },
+    { name = "sentence-transformers", specifier = ">=6.0.0" },
+]
 dev = [
+    { name = "httpx", specifier = ">=0.27" },
     { name = "ipykernel", specifier = ">=6.29" },
     { name = "matplotlib", specifier = ">=3.9" },
     { name = "mypy", specifier = ">=1.10" },
@@ -598,6 +607,11 @@ dev = [
     { name = "pytest", specifier = ">=8.2" },
     { name = "pytest-cov", specifier = ">=5.0" },
     { name = "ruff", specifier = ">=0.6" },
+]
+research = [
+    { name = "imbalanced-learn", specifier = ">=0.14.2" },
+    { name = "lightgbm", specifier = ">=4.7.0" },
+    { name = "optuna", specifier = ">=4.9.0" },
 ]
 
 [[package]]

@@ -518,3 +518,98 @@ entrada corregida se corrige con una entrada nueva que referencia a la anterior.
   ES lo que se cree.** La única defensa es tratarlo como lo que es —código— y aplicarle lo que el
   proyecto le aplica a todo lo demás: un test por cada caso real que lo expuso, y la costumbre de
   abrir la instancia concreta antes de creerse el agregado.
+
+---
+
+### 008 — El arranque bloqueante: el servicio no responde durante cuatro minutos y medio, y no reporta ningún error
+
+- **Fecha:** 2026-08-31
+- **Fase:** 04-production
+
+- **Síntoma:** el servicio del modelo, arrancado con `uvicorn` contra un registro de MLflow
+  inalcanzable, **no acepta ninguna conexión durante más de cuatro minutos**. No responde ni
+  siquiera `/health`, que existe precisamente para responder cuando el modelo no está. En el
+  log solo aparecen dos líneas de uvicorn y luego nada:
+
+      INFO:     Started server process [1288]
+      INFO:     Waiting for application startup.
+
+  No hay excepción, no hay traza, no hay línea de error, no hay timeout. **Solo ausencia de
+  respuesta**, que es lo que hace que el síntoma se confunda con un problema de red, de
+  puertos o de firewall antes que con lo que es.
+
+- **Causa raíz:** dos mecanismos que por separado son correctos y juntos producen el fallo.
+
+  El primero: **el cliente de MLflow reintenta con retroceso exponencial.** Ante una conexión
+  rechazada no falla, sino que agota un presupuesto de reintentos. Medido sobre
+  `models:/credit-risk-default-probability/1` con el servidor apuntando a un puerto donde no
+  escucha nadie: **263,2 segundos** hasta que devuelve el error.
+
+  El segundo: **el `lifespan` de ASGI bloquea la aceptación de conexiones.** Uvicorn ejecuta la
+  función de ciclo de vida **antes** de abrir el socket a peticiones, y no imprime
+  `Application startup complete` hasta que retorna. La carga del artefacto vivía ahí.
+
+  La combinación convierte *«el registro está lento»* en *«el proceso no existe»*. Y el hecho
+  de que `load_model_service()` estuviera cuidadosamente escrita para **no lanzar nunca** —de
+  modo que un registro caído degradara el servicio en vez de matarlo— es lo que hizo el fallo
+  invisible: la función absorbía el error correctamente, pero cuatro minutos tarde, y durante
+  esos cuatro minutos no había nadie a quien contárselo.
+
+- **Diagnóstico:** no salió de leer el código. Salió de **medir el caso degradado en vez de
+  afirmarlo**. El turno anterior había documentado por escrito que «si el registry no responde,
+  el proceso arranca y `/health` informa degraded»; al ejecutarlo de verdad —levantar el
+  servicio con `MLFLOW_TRACKING_URI` apuntando a `http://127.0.0.1:59999` y hacerle `curl`— el
+  `curl` devolvía `exit 7`, conexión rechazada, contra un proceso que estaba corriendo. De ahí
+  salió el número, cronometrando `load_model_service()` de forma aislada:
+
+      load_model_service() tardó 263.2 s y NO lanzó excepción
+      is_ready: False
+
+  Lo que se descartó por el camino: que fuera el puerto —el proceso figuraba en la lista de
+  procesos y el log mostraba `Started server process`—, y que fuera lentitud de la descarga del
+  artefacto —el caso *sano* arranca en unos pocos segundos, así que el tiempo no estaba en el
+  tamaño del modelo sino en los reintentos—.
+
+- **Solución:** ADR-0010, decisión 3. La carga se mueve a un **hilo demonio** que el `lifespan`
+  arranca antes de retornar, de modo que la disponibilidad del proceso deja de depender de la
+  disponibilidad de MLflow. El estado deja de ser un booleano y pasa a tener tres fases —
+  `loading`, `ready`, `degraded`—, porque *«todavía no»* y *«no se pudo»* piden acciones
+  distintas de quien está de guardia: `/health` responde 200 en las tres e informa la fase, y un
+  endpoint que necesita el artefacto responde 503 `model_loading` con `Retry-After` mientras
+  carga y 503 `model_unavailable` con el motivo cuando falló. Medido después del cambio, en las
+  mismas condiciones y cronometrando desde antes de lanzar el proceso: **4,3 segundos hasta la
+  primera respuesta de `/health`**, contra los 263,2 segundos que tardaba la carga — y esos
+  4,3 segundos son Python importando `mlflow` y `shap`, no el registro: en el log
+  `load.started` y `Application startup complete` salen seguidos.
+
+- **Prevención:** dos capas, y ninguna es un documento.
+
+  `tests/test_api.py::test_the_lifespan_does_not_block_on_the_load` sustituye el cargador por
+  uno que duerme treinta segundos y **afirma que la aplicación responde en menos de cinco**. Si
+  la carga volviera al `lifespan`, el test no pasaría.
+
+  `.github/workflows/docker.yml` levanta el contenedor con `MLFLOW_TRACKING_URI` apuntando a un
+  puerto donde nada escucha —la condición exacta que produjo el fallo— y **falla el build si
+  `/health` no responde en 30 segundos**. Antes del cambio ese paso habría agotado su propio
+  tiempo de espera.
+
+  Y una consecuencia de diseño que es prevención por su cuenta: el healthcheck del contenedor
+  apunta a `/health` y no a la disponibilidad. Un healthcheck que tratara «cargando» como «no
+  sano» reiniciaría el servicio, y el reinicio reiniciaría la carga: **un ciclo de reinicios
+  causado por el propio healthcheck**, cuyo síntoma visible sería «el contenedor no arranca» y
+  no «el registro no responde».
+
+- **Aprendizaje:** **manejar bien un error no es lo mismo que manejarlo a tiempo, y un fallo
+  que se manifiesta como silencio no se parece a un fallo.**
+
+  El código hacía lo correcto: capturaba, registraba el motivo y degradaba el servicio en vez de
+  matarlo. Lo que nadie había preguntado era *cuándo*. Un manejo de errores correcto colocado
+  detrás de una operación sin límite de tiempo produce, durante toda esa operación, exactamente
+  el mismo comportamiento observable que no tener manejo de errores en absoluto.
+
+  De ahí salen dos reglas generalizables. La primera: **toda operación de red en un camino de
+  arranque tiene un presupuesto de tiempo, y si no se lo fijas tú se lo fija la biblioteca** —el
+  de MLflow son 263 segundos, un número que nadie de este proyecto eligió y que gobernaba el
+  arranque del sistema—. La segunda, que es la de la sección 6.4 de la metodología dicha de otra
+  forma: **el camino degradado también es una superficie, y afirmarlo no lo verifica.** Estaba
+  escrito en un docstring, era falso, y bastó un `curl` para saberlo.

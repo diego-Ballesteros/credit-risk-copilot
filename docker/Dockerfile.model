@@ -1,0 +1,101 @@
+# The model service: probability, attribution, counterfactual.
+#
+# What this image is NOT allowed to contain, and how that is enforced rather than intended:
+# `torch`, `chromadb`, `anthropic`, `langgraph`, `sentence-transformers`. The enforcement is
+# not this comment and not a careful `COPY` - it is `uv sync --no-default-groups` resolving
+# only `[project.dependencies]`, which names none of them, plus a probe in
+# `.github/workflows/docker.yml` that imports the application inside the built image and
+# fails the build if any of the five is in `sys.modules`. Measured on the development
+# environment, those five and their transitive closure are about 604 MB.
+#
+# Build from the repository root so `.dockerignore` applies:
+#     docker build -f docker/Dockerfile.model -t credit-risk-model .
+
+ARG PYTHON_VERSION=3.11-slim-bookworm
+ARG UV_VERSION=0.12.0
+
+# ---------------------------------------------------------------------------
+# Stage 1 - build the virtual environment
+# ---------------------------------------------------------------------------
+# The builder and the runtime share the same base image on purpose. A virtual environment
+# records the absolute path of the interpreter it was created against, so a builder on a
+# different Python patch release produces a venv whose symlinks dangle in the final stage -
+# and the symptom is an image that builds and cannot start.
+FROM python:${PYTHON_VERSION} AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:0.12.0 /uv /uvx /bin/
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/app/.venv
+
+WORKDIR /app
+
+# Only the two files that determine the dependency graph, so this layer is rebuilt when the
+# dependencies change and not when a docstring does.
+COPY pyproject.toml uv.lock ./
+
+# `--locked` fails if `uv.lock` does not match `pyproject.toml`, which is the property that
+# makes this build reproducible: it can never silently resolve something newer.
+# `--no-default-groups` drops `dev`, `agent` and `research`, leaving exactly
+# `[project.dependencies]` - this line IS the isolation guarantee, and the probe in
+# `.github/workflows/docker.yml` is what stops it from being only an intention.
+# `--no-install-project` installs the dependencies without the project itself; see the
+# runtime stage for why the source is exposed by PYTHONPATH instead.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-install-project --no-default-groups
+
+# ---------------------------------------------------------------------------
+# Stage 2 - the runtime
+# ---------------------------------------------------------------------------
+FROM python:${PYTHON_VERSION} AS runtime
+
+# A fixed high uid rather than a name: a bind-mounted volume shows the numeric owner, and a
+# host that has to line up permissions needs a number that does not move between builds.
+RUN groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin app
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/app/.venv/bin:${PATH}" \
+    PYTHONPATH=/app/src \
+    MODEL_API_PORT=8000
+
+WORKDIR /app
+
+COPY --from=builder --chown=10001:10001 /app/.venv /app/.venv
+COPY --chown=10001:10001 src/ /app/src/
+
+# **Why the source lives at /app/src and the project is not pip-installed.**
+# `credit_copilot.config` derives `PROJECT_ROOT` from the location of its own module file,
+# so where the source sits decides where every data path points. Installed into
+# site-packages, `PROJECT_ROOT` would resolve inside the virtual environment and
+# `settings.corpus_dir` would point at a directory that does not exist - silently, because
+# a `Path` that does not exist is not an error until something reads it. Keeping the tree at
+# /app/src makes PROJECT_ROOT `/app`, which is where the compose file mounts `data/`.
+#
+# **Why no artefact is baked in.** The model comes from the MLflow Model Registry at
+# runtime, by the pinned version `models:/credit-risk-default-probability/1`. Copying it in
+# would freeze a model version into an image tag, so registering version 2 would mean
+# rebuilding an image to change something the registry already versions - and it would put a
+# credit-scoring artefact inside a public container registry.
+
+USER 10001:10001
+
+EXPOSE 8000
+
+# The healthcheck asks whether the PROCESS is alive, and deliberately not whether the model
+# is loaded. ADR-0010 decision 3: the load runs in the background and `/health` answers 200
+# from the first second, including while loading. Pointing this at readiness would mark a
+# service unhealthy for as long as its registry is slow, and any orchestrator that restarts
+# on unhealthy would then restart the load - a crash loop caused by the healthcheck, whose
+# visible symptom is "the container will not start". Readiness has its own endpoint,
+# `/ready`, for the callers that should ask it.
+#
+# `urllib` rather than `curl`: the slim image has no curl, and installing one to ask a
+# question the interpreter can already ask would add a package and a CVE surface for nothing.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["python", "-c", "import os,sys,urllib.request; sys.exit(0 if urllib.request.urlopen(f\"http://127.0.0.1:{os.environ['MODEL_API_PORT']}/health\", timeout=4).status == 200 else 1)"]
+
+CMD ["sh", "-c", "exec uvicorn credit_copilot.api.model_app:app --host 0.0.0.0 --port ${MODEL_API_PORT}"]
