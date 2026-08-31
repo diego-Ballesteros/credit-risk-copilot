@@ -187,6 +187,71 @@ forest necesita SHAP para explicar una decisión.
 
 ---
 
+## 4 bis · Métricas online del sistema desplegado
+
+Las cifras de la sección 4 describen el **modelo**. Estas describen el **sistema que lo
+sirve**, medido con peticiones HTTP reales contra la API. Entrada 013 de
+`docs/EVALUATION.md` y evidencia en
+[`docs/analysis/online-metrics-evidence.md`](analysis/online-metrics-evidence.md).
+
+**Dónde se midió:** `uvicorn` en la máquina de desarrollo, **no en el contenedor**. Las
+cifras describen ese proceso en ese equipo y no son una predicción del despliegue.
+
+### Latencia y throughput del servicio del modelo
+
+**Ninguna latencia es interpretable sin su concurrencia y su número de workers al lado.**
+
+| Despliegue | Concurrencia | p50 | p95 | p99 | máx | Throughput |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 worker | 1 | **75,6 ms** | 84,1 ms | 91,3 ms | 193,3 ms | 14,1 req/s |
+| 1 worker | 8 | 527,4 ms | 643,2 ms | 692,4 ms | 870,4 ms | 15,8 req/s |
+| **4 workers** | 8 | **152,3 ms** | 247,1 ms | 279,6 ms | 633,1 ms | **53,2 req/s** |
+
+**El tiempo de servicio son 75,6 ms; el resto es cola.** De concurrencia 1 a 8 con un worker
+la latencia se multiplica por 7 y el throughput no se mueve, que es la firma de un cuello
+serializado. Con 4 workers el throughput sube 3,4×, a costa de que cada worker cargue su
+propia copia del artefacto.
+
+Una petición **rechazada** cuesta **2,0 ms** contra 75,6 ms de una válida: el contrato la
+rechaza 38 veces más barato que puntuarla, porque no llega al artefacto.
+
+### Tasa de error
+
+Sobre 3.000 peticiones con un 5% deliberadamente malformado: **4,40% de error total**, del
+que **el 100% son los 422 esperados** y **0 son fallos sobre tráfico válido** en 2.868
+peticiones. Ninguna petición rechazada devolvió una probabilidad.
+
+### Discriminación en el flujo — y por qué NO es una medición de desempeño
+
+| Métrica | Flujo servido | Referencia CV 5 folds | Diferencia |
+| --- | ---: | ---: | ---: |
+| PR-AUC | 0,672144 | 0,564230 ± 0,007962 | **+0,107914** |
+| ROC-AUC | 0,844692 | 0,786279 | +0,058413 |
+| Brier | 0,117997 | 0,133408 | −0,015411 |
+
+**No existe un holdout limpio en este proyecto**, porque el artefacto se ajustó sobre las
+30.000 filas (sección 2). El flujo servido está por tanto **dentro de la muestra de ajuste**,
+y las tres métricas se mueven hacia «mejor» por memorización. **+0,1079 de PR-AUC es
+optimismo, no desempeño**, y una degradación real habría dado un número *menor* que 0,5642.
+Las cifras que gobiernan cualquier afirmación sobre este modelo siguen siendo las de la
+sección 4.
+
+### Drift entre entrenamiento y flujo servido
+
+PSI por feature, 10 bins por cuantiles de la referencia, umbrales declarados
+(<0,10 ruido / 0,10–0,25 moderado / ≥0,25 accionable). **Máximo PSI = 0,0092**; ninguna de
+las 23 features señala. **Es un control negativo del instrumento y no una ausencia de drift**:
+el flujo es una submuestra de la referencia, así que un PSI cercano a cero es lo esperado por
+construcción.
+
+### Latencia y costo del copiloto
+
+Sobre 5 consultas anotadas, de a una contra `POST /chat`: mediana **39,52 s** (mín 27,09 s,
+máx 47,67 s) y **0,1502 USD por consulta**. `n=5` no permite estimar un percentil. La calidad
+de las respuestas **no se remidió**: es la entrada 012 y la sección 11.4 bis.
+
+---
+
 ## 5 · Umbral operativo y el supuesto que lo sustenta
 
 **Umbral: 0,160.** Un cliente con probabilidad ≥ 0,160 se marca para rechazo.
@@ -369,13 +434,32 @@ llamado dos veces sobre la misma fila no devuelve exactamente el mismo número**
 umbral de 0,160 y no puede cambiar una decisión, pero invalida cualquier test que exija
 igualdad de bits sobre predicciones.
 
-### 7.5 · La firma declara enteros
+### 7.5 · La firma declara enteros — **resuelto en la fase 4**
 
 La firma inferida declara las 23 columnas como enteros, porque así llegan de la fuente.
 MLflow advierte que un entero en Python no puede representar un valor faltante: si una
 petición real llega con un nulo, el enforcement de esquema fallará. El validador del
 proyecto garantiza que el dataset no tiene nulos, pero **una API recibe lo que le mandan**.
-Está sin resolver y es trabajo de la fase de API.
+
+**La API resuelve el riesgo rechazando, no imputando.** El contrato de entrada
+—`api/schemas.ApplicantAttributes`, que hereda `models/applicant.ApplicantRecord` y le añade
+modo estricto— declara los 23 campos requeridos y de tipo entero. Un campo ausente, un `null`
+explícito, un valor fuera del rango plausible o una categoría que ningún ADR acepta producen
+**HTTP 422 nombrando el campo**, y **el modelo no se invoca**: la validación ocurre antes de
+que la petición llegue al artefacto. Nada se imputa, porque un `PAY_AMT3` ausente significa
+*«no se sabe»* y escribir un cero lo convertiría en *«no pagó en julio»*, que es un hecho de
+negocio y falso. La sección 2.3 de la política interna manda ese caso a evaluación manual
+completa, que es exactamente lo que un 422 deja hacer.
+
+El modo estricto es más severo que el contrato interno a propósito: en modo laxo Pydantic
+convierte el literal JSON `true` en `1`, y `PAY_STATUS_1 = 1` significa *un mes de mora*. Eso
+es un hecho de negocio fabricado desde un error de tipo, que es imputar por otra puerta.
+
+**Verificado, no afirmado.** `tests/test_api.py` fija los cinco rechazos y comprueba con un
+contador que **el modelo nunca se invoca** en ninguno de ellos; y en la corrida online de la
+entrada 013 de `docs/EVALUATION.md`, **132 peticiones malformadas de 3.000 se rechazaron todas
+con 422 y ninguna devolvió una probabilidad**. Una petición rechazada cuesta 2,0 ms contra los
+75,6 ms de una válida, porque no llega al artefacto.
 
 ### 7.6 · SMOTE se evaluó sobre columnas one-hot
 

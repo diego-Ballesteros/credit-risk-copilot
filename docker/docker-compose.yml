@@ -1,0 +1,95 @@
+# The two services, composed.
+#
+# Run it from the repository root, and name the environment file explicitly:
+#
+#     docker compose -f docker/docker-compose.yml --env-file .env up --build
+#
+# `--env-file` is not optional decoration. Compose resolves `${VAR}` against the *project
+# directory*, which defaults to the directory holding this file - so without the flag it
+# would look for `docker/.env`, not find it, substitute empty strings, and bring the stack up
+# with no credentials at all. That failure is quiet: the services start and report `degraded`.
+# Naming the file makes the shape of the mistake impossible instead of documented.
+#
+# **No credential appears in this file.** Every secret is read from the repository's `.env`,
+# which is gitignored, through the `${VAR}` form with no default. A `${VAR:-something}` would
+# be worse than nothing here: it would let the stack come up with a placeholder credential
+# and fail later, against the registry, with an authentication error about a value nobody
+# typed. Without a default, a missing variable is an empty string, MLflow's configuration
+# check names the variable, and `/health` reports `degraded` with that reason.
+#
+# The build context is the repository root, not this directory, so that `.dockerignore`
+# applies - it is what keeps `.env` and `data/` out of every layer.
+
+name: credit-risk-copilot
+
+x-common-env: &common-env
+  # Read from ../.env at `docker compose` time. Never written into an image.
+  MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI}
+  MLFLOW_TRACKING_USERNAME: ${MLFLOW_TRACKING_USERNAME}
+  MLFLOW_TRACKING_PASSWORD: ${MLFLOW_TRACKING_PASSWORD}
+
+services:
+  model:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.model
+    image: credit-risk-model:local
+    environment:
+      <<: *common-env
+      MODEL_API_PORT: "8000"
+    ports:
+      - "${MODEL_API_HOST_PORT:-8000}:8000"
+    # `unless-stopped` and not `always`: a container the operator stopped on purpose stays
+    # stopped across a daemon restart. Note that Docker does not restart a container for
+    # being *unhealthy* - only for exiting - which is why the healthcheck in the Dockerfile
+    # is liveness and the readiness gate is the `/ready` endpoint instead.
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.agent
+    image: credit-risk-agent:local
+    environment:
+      <<: *common-env
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      AGENT_API_PORT: "8001"
+    ports:
+      - "${AGENT_API_HOST_PORT:-8001}:8001"
+    volumes:
+      # The corpus and the built index, mounted read-only from the host and **together**.
+      # Read-only because the copilot only ever reads them, and a service that cannot write
+      # its own evidence cannot corrupt it. Together because a chunk identifier resolved
+      # against a corpus revision the index was not built from returns the wrong fragment
+      # with no error - `docker/Dockerfile.agent` records why that mismatch is the one this
+      # project refuses to make possible.
+      #
+      # Build the index on the host first:
+      #     uv run python scripts/build_rag_index.py
+      # Without it the service starts, reports `degraded` on /health with the reason, and
+      # answers 503 on /chat. It does not invent an index.
+      - ../data/corpus:/app/data/corpus:ro
+      - ../data/vector_store:/app/data/vector_store:ro
+      # The embedding model is downloaded on first use and cached here, so a restart does
+      # not re-download it. A named volume rather than a bind mount: it is a cache, it
+      # belongs to the container, and nothing on the host should be reading it.
+      - agent-model-cache:/home/app/.cache
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # No `read_only` here, unlike the model service: the embedding library writes its cache.
+    # The writable surface is confined to the named volume above.
+
+    # **No `depends_on: model`.** The copilot does not call the model service over HTTP - it
+    # loads the same registry artefact in its own process, which is what keeps the number it
+    # reports identical to the one `/predict` returns. Declaring a dependency that does not
+    # exist would couple two start-ups for no reason and would make an outage of one look
+    # like an outage of both.
+
+volumes:
+  agent-model-cache:

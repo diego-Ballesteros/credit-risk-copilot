@@ -1,0 +1,264 @@
+name: Docker
+
+# **This workflow is the verification, not a convenience.** The machine this project is
+# developed on has no Docker daemon, so nothing here was proven locally: the build, the
+# absence of the forbidden modules inside the model image, and the non-blocking start-up are
+# all established here or nowhere. A job that only ran `docker build` would prove that the
+# image compiles, which is the one thing that was never in doubt.
+#
+# What it asserts, in order:
+#   1. both images build from the locked dependency set;
+#   2. the model image does NOT contain torch, chromadb, anthropic, langgraph or
+#      sentence-transformers - checked by importing the application inside the image;
+#   3. the model container ANSWERS `/health` within seconds while its registry is
+#      unreachable, which is the regression test for the 263-second blocking start-up of
+#      ADR-0010 decision 3;
+#   4. a request that needs the artefact answers 503 and never a probability.
+#
+# Only then are the images pushed, and only on a branch push - never from a pull request,
+# where the token is read-only and the code is untrusted.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+# The token GitHub Actions provides, with the one extra scope GHCR needs. No secret is
+# configured for this workflow and none is needed: `GITHUB_TOKEN` can push to the package
+# namespace of the repository that owns it.
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  images:
+    name: Build, verify and publish
+    runs-on: ubuntu-latest
+
+    strategy:
+      # `fail-fast: false` so that a failure in one image still reports the other. When the
+      # dependency split breaks, knowing whether it broke one image or both is the first
+      # question, and a cancelled job cannot answer it.
+      fail-fast: false
+      matrix:
+        include:
+          - service: model
+            dockerfile: docker/Dockerfile.model
+            module: credit_copilot.api.model_app
+            port: 8000
+          - service: agent
+            dockerfile: docker/Dockerfile.agent
+            module: credit_copilot.api.agent_app
+            port: 8001
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
+          # Four tag shapes, each answering a different question:
+          #   `main` / `develop` - what is deployed from that branch right now;
+          #   `sha-<commit>`     - the immutable identity of one build, which is the only
+          #                        tag that can be trusted not to move under a running
+          #                        deployment;
+          #   `latest`           - only ever on the default branch, never on develop.
+          tags: |
+            type=ref,event=branch
+            type=sha,format=long,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # Build once into the local daemon so the verification steps below run against the
+      # exact image that will be pushed - not a rebuild that could differ.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          load: true
+          push: false
+          tags: verify-${{ matrix.service }}:ci
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      - name: Report image size
+        run: |
+          echo "### Image \`${{ matrix.service }}\`" >> "$GITHUB_STEP_SUMMARY"
+          docker image ls verify-${{ matrix.service }}:ci \
+            --format '| {{.Repository}} | {{.Tag}} | {{.Size}} |' >> "$GITHUB_STEP_SUMMARY"
+          docker image ls verify-${{ matrix.service }}:ci
+
+      # ------------------------------------------------------------------
+      # The isolation guarantee, checked inside the image
+      # ------------------------------------------------------------------
+      # `tests/test_api.py` runs the same probe in a subprocess on a developer machine, where
+      # a forbidden module could be present for some other reason. Here it runs where it
+      # actually matters: in the image that gets published. If a dependency creeps back into
+      # the base set of `pyproject.toml`, this fails and nothing is pushed.
+      - name: Verify the model image carries no agent stack
+        if: matrix.service == 'model'
+        run: |
+          docker run --rm --network none verify-model:ci python -c "
+          import sys
+          import credit_copilot.api.model_app  # noqa: F401
+          forbidden = ['torch', 'chromadb', 'anthropic', 'langgraph', 'sentence_transformers']
+          present = [name for name in forbidden if name in sys.modules]
+          installed = []
+          for name in forbidden:
+              try:
+                  __import__(name)
+                  installed.append(name)
+              except ImportError:
+                  pass
+          print('imported by the application:', present or 'none')
+          print('installed in the image     :', installed or 'none')
+          print('modules in the process     :', len(sys.modules))
+          if present or installed:
+              raise SystemExit('the model image carries the agent stack')
+          "
+
+      - name: Confirm the agent image does carry the stack it needs
+        if: matrix.service == 'agent'
+        run: |
+          docker run --rm --network none verify-agent:ci python -c "
+          for name in ['torch', 'chromadb', 'anthropic', 'langgraph', 'sentence_transformers']:
+              __import__(name)
+              print(name, 'ok')
+          "
+
+      - name: Verify the container runs as a non-root user
+        run: |
+          uid=$(docker run --rm verify-${{ matrix.service }}:ci id -u)
+          echo "uid inside the container: ${uid}"
+          test "${uid}" = "10001"
+
+      - name: Verify no credential reached any layer
+        run: |
+          # `.env` must never be in the build context, so it must never be in the image.
+          if docker run --rm verify-${{ matrix.service }}:ci sh -c 'ls -a /app' | grep -qx '.env'; then
+            echo "::error::an .env file is present inside the image"
+            exit 1
+          fi
+          # And nothing in the build history may carry a secret-looking assignment.
+          if docker history --no-trunc verify-${{ matrix.service }}:ci \
+              | grep -Ei 'API_KEY=[^ ]|PASSWORD=[^ ]|TRACKING_USERNAME=[^ ]'; then
+            echo "::error::a credential appears in the image history"
+            exit 1
+          fi
+          echo "no credential in the filesystem or in the history"
+
+      # ------------------------------------------------------------------
+      # The regression test for the blocking start-up
+      # ------------------------------------------------------------------
+      # `MLFLOW_TRACKING_URI` points at a port inside the container's own network namespace
+      # where nothing listens. The MLflow client therefore retries with exponential backoff
+      # for about 263 seconds - the exact condition measured in phase 4 - and the assertion is
+      # that `/health` answers anyway, within seconds. Before ADR-0010 decision 3 this step
+      # would have timed out: uvicorn accepted no connection until the retry budget ran out.
+      - name: Verify the service answers while its registry is unreachable
+        run: |
+          set -euo pipefail
+          docker run -d --name probe-${{ matrix.service }} \
+            -p 127.0.0.1:${{ matrix.port }}:${{ matrix.port }} \
+            -e MLFLOW_TRACKING_URI=http://127.0.0.1:59999 \
+            -e MLFLOW_TRACKING_USERNAME=unused \
+            -e MLFLOW_TRACKING_PASSWORD=unused \
+            -e ANTHROPIC_API_KEY=unused \
+            verify-${{ matrix.service }}:ci
+
+          started=$(date +%s)
+          deadline=$((started + 30))
+          until curl -sf "http://127.0.0.1:${{ matrix.port }}/health" -o health.json; do
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "::error::/health did not answer within 30s - the start-up is blocking again"
+              docker logs probe-${{ matrix.service }}
+              exit 1
+            fi
+            sleep 1
+          done
+          elapsed=$(( $(date +%s) - started ))
+          echo "/health answered after ${elapsed}s"
+          cat health.json
+          echo
+
+          # It must be alive and NOT ready: 30 seconds is far inside the retry budget, so the
+          # loader thread is either still working or has already given up. Both are fine; a
+          # `ready` here would mean the probe reached a registry it was not supposed to reach.
+          phase=$(python3 -c "import json;print(json.load(open('health.json'))['phase'])")
+          echo "phase: ${phase}"
+          test "${phase}" != "ready"
+          test "${elapsed}" -lt 30
+
+          # And the readiness gate must disagree with the liveness report.
+          ready_code=$(curl -s -o /dev/null -w '%{http_code}' \
+            "http://127.0.0.1:${{ matrix.port }}/ready")
+          echo "/ready -> ${ready_code}"
+          test "${ready_code}" = "503"
+
+      - name: Verify a scoring request refuses instead of inventing a number
+        if: matrix.service == 'model'
+        run: |
+          set -euo pipefail
+          body=$(curl -s -X POST http://127.0.0.1:8000/predict \
+            -H 'Content-Type: application/json' \
+            -d '{"applicant":{"LIMIT_BAL":70000,"SEX":2,"EDUCATION":1,"MARRIAGE":2,"AGE":25,
+                 "PAY_STATUS_1":0,"PAY_STATUS_2":0,"PAY_STATUS_3":0,"PAY_STATUS_4":0,
+                 "PAY_STATUS_5":0,"PAY_STATUS_6":0,"BILL_AMT1":67521,"BILL_AMT2":66999,
+                 "BILL_AMT3":63949,"BILL_AMT4":63699,"BILL_AMT5":64718,"BILL_AMT6":65970,
+                 "PAY_AMT1":3000,"PAY_AMT2":4500,"PAY_AMT3":4042,"PAY_AMT4":2500,
+                 "PAY_AMT5":2800,"PAY_AMT6":2500}}')
+          echo "${body}"
+          echo "${body}" | grep -qE '"type":"model_(loading|unavailable)"'
+          if echo "${body}" | grep -q 'probability_of_default'; then
+            echo "::error::the service returned a probability without a loaded artefact"
+            exit 1
+          fi
+
+          # A malformed request must still be refused by name, with the model never reached.
+          missing=$(curl -s -X POST http://127.0.0.1:8000/predict \
+            -H 'Content-Type: application/json' -d '{"applicant":{"AGE":25}}')
+          echo "${missing}"
+          echo "${missing}" | grep -q '"PAY_AMT3"'
+
+      - name: Container logs
+        if: always()
+        run: docker logs probe-${{ matrix.service }} || true
+
+      - name: Stop the probe
+        if: always()
+        run: docker rm -f probe-${{ matrix.service }} || true
+
+      # ------------------------------------------------------------------
+      # Publish, only once everything above has passed
+      # ------------------------------------------------------------------
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Re-runs `build-push-action` with the same context and the same cache, so this is a
+      # cache hit that pushes rather than a second build. What is published is what was
+      # verified above.
+      - name: Push image
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
