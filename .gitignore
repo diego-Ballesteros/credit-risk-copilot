@@ -1,0 +1,72 @@
+# --- Entornos virtuales -----------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.env
+
+# --- Cachés y artefactos de Python -----------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Cachés de herramientas -------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# --- Credenciales -----------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- Experimentos -----------------------------------------------------------
+mlruns/
+mlartifacts/
+
+# --- Datos: se ignora todo el contenido salvo los .gitkeep ------------------
+data/**
+!data/**/
+!data/**/.gitkeep
+
+# El corpus normativo SÍ se versiona: son documentos de texto, pesan poco, y sin
+# ellos el índice vectorial no es reproducible. El índice, en cambio, es derivado.
+!data/corpus/**
+data/vector_store/
+
+# El set de evaluación del retrieval también se versiona: las anotaciones se hicieron
+# a mano y sin ellas ninguna medición de recuperación es reproducible ni auditable.
+!data/eval/**
+
+# --- Notebooks --------------------------------------------------------------
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# --- IDE / editores ---------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Sistema operativo ------------------------------------------------------
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*

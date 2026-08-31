@@ -1,0 +1,41 @@
+# What never enters a build context.
+#
+# This file is a security control before it is an optimisation. Everything listed here
+# would otherwise be sent to the daemon and be reachable by any `COPY .`, and a secret that
+# reaches a layer stays in that layer even if a later instruction deletes it - `docker
+# history` and any registry pull can read it back. So the rule is not "do not COPY .env",
+# which is a rule somebody has to remember; it is "`.env` cannot be in the context", which
+# is a rule the tool enforces.
+
+# --- Credentials. The reason this file exists. -----------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Derived data, and the two directories that dominate the context by size -----------
+# `data/vector_store/` is a built Chroma index and `data/raw|processed/` are downloads and
+# parquet. None of the three is copied into an image by decision (ADR-0010): the index is
+# mounted, the model comes from the registry at runtime. Excluding them here means a build
+# does not even transfer them.
+data/
+mlruns/
+.venv/
+**/__pycache__/
+*.pyc
+.coverage
+htmlcov/
+
+# --- Tooling caches, notebooks and history ---------------------------------------------
+.git/
+.github/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+notebooks/
+docs/
+tests/
+*.ipynb
+.pre-commit-config.yaml
+Taskfile.yml
