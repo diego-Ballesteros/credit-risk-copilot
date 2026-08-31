@@ -357,3 +357,79 @@ entrada corregida se corrige con una entrada nueva que referencia a la anterior.
   cuyo **baseline** las hace triviales; esto es una métrica cuyo **conjunto de prueba** la hace
   trivial. La defensa es la misma que para el resto del proyecto: **el procedimiento que
   produce la evidencia se escribe y se mide, no se declara.**
+
+---
+
+### 006 — Un plan vacío del planificador se aceptó como respuesta válida
+
+- **Fecha:** 2026-08-31
+- **Fase:** 03-genai
+
+- **Síntoma:** una consulta que necesitaba herramientas terminó **sin invocar ninguna**. El
+  analista preguntaba, sobre un solicitante cargado, cómo quedaría el puntaje si el cliente
+  tuviera otro cupo y no registrara mora en un mes, y si podía prometerle la aprobación. El
+  copiloto respondió en prosa explicando qué haría, con qué herramientas lo haría y en qué
+  orden — y no ejecutó ninguna. La respuesta salió larga, correcta en su forma, sin un solo
+  número y sin una sola cita. El grafo la dio por terminada con
+  `outcome = answered_without_tools` y `evidencia suficiente: no`.
+
+  Nada falló. No hubo excepción, ni herramienta en rojo, ni ciclo agotado: hubo una respuesta
+  bien redactada sobre por qué no había respuesta.
+
+- **Causa raíz:** la arista condicional que sigue al nodo de planificación enviaba un plan
+  vacío **directamente al nodo de síntesis**. Ese enrutamiento confunde dos situaciones que
+  desde ahí son indistinguibles:
+
+  1. la consulta genuinamente no necesita ninguna herramienta, y
+  2. el planificador falló en proponer la que hacía falta.
+
+  Las dos llegan al enrutador como la misma cosa —una lista vacía— y el enrutador solo ve la
+  lista. Lo único capaz de separarlas es leer **la pregunta contra la evidencia reunida**, que
+  es exactamente lo que hace el nodo evaluador de suficiencia, y ese nodo estaba fuera del
+  camino en ese caso concreto. El ciclo de re-planificación existía y no podía activarse para
+  el único fallo que no deja rastro.
+
+  El modo de falla es de la familia de la **entrada 001** de este documento: una ausencia
+  tratada como un resultado. Allí GitHub descartaba un evento en silencio; aquí el grafo
+  interpreta "cero herramientas" como "cero herramientas necesarias".
+
+- **Diagnóstico:** no se detectó leyendo el grafo, que era coherente, ni con los tests, que
+  ejercitan las herramientas por separado y no el enrutamiento. Se detectó **corriendo el
+  agente sobre una consulta escrita a mano** para el reporte del turno, y comparando lo que la
+  consulta pedía con la sección `HERRAMIENTAS INVOCADAS`, que decía *"ninguna: la consulta no
+  necesitó herramientas"* sobre una consulta que pedía una simulación. Es la sección 6.4 de
+  `docs/METHODOLOGY.md` haciendo su trabajo: **una superficie nueva no se cierra sin una
+  llamada real.**
+
+- **Solución:** dos cambios en el mismo turno, en `agent/graph.py` y `agent/prompts.py`.
+
+  1. **Un plan vacío se enruta al evaluador**, no a la síntesis. El ciclo de re-planificación
+     cubre así también ese caso: el evaluador lee la pregunta, dice que la evidencia no
+     alcanza, y el planificador vuelve a intentarlo con esa observación.
+  2. Las instrucciones del planificador declaran que **su salida son llamadas y no respuestas**,
+     y que toda consulta sobre un solicitante, un escenario o una norma necesita al menos una
+     herramienta.
+
+  Verificado sobre la misma consulta: pasa de cero llamadas a cuatro, incluida la corrección de
+  un argumento que la primera vuelta había errado.
+
+- **Prevención:** la corrección sube de nivel en la jerarquía de la sección 6.5 de
+  `docs/METHODOLOGY.md`. El punto 2 es **nivel 3** —una instrucción en un prompt, que se cumple
+  mientras el modelo la siga— y por sí solo no habría bastado. El punto 1 es **nivel 1**: por
+  la forma del grafo, ninguna respuesta puede escribirse sin que el evaluador haya visto la
+  pregunta contra la evidencia, y "el planificador no llamó a nada" deja de ser un camino que
+  evita el control.
+
+  Queda además **medido y no supuesto**: `scripts/evaluate_agent.py` reporta el recall de
+  tool-calling sobre el set anotado, de modo que una regresión de este tipo aparece como un
+  número y no como una respuesta que se lee bien.
+
+- **Aprendizaje:** **en un grafo, un conjunto vacío no es una decisión: es la ausencia de una
+  decisión, y enrutarlo como si fuera una decisión es tratar un fallo como un resultado.**
+
+  La formulación general que queda para el proyecto: cuando una arista condicional ramifica
+  sobre el **tamaño** de algo que otro nodo produjo, hay que preguntarse qué distingue "produjo
+  cero porque cero era correcto" de "produjo cero porque falló". Si nada en esa arista los
+  distingue, el camino de cero tiene que pasar por el control que sí puede distinguirlos,
+  aunque cueste una llamada de más en el caso en que cero era correcto. Un control que se
+  saltea justo en el caso ambiguo no es un control.

@@ -89,6 +89,7 @@ from credit_copilot.agent.state import (
     AgentState,
     Citation,
     PlannedCall,
+    TokenUsage,
     ToolRecord,
     initial_state,
 )
@@ -342,6 +343,7 @@ def _make_planner(client: anthropic.Anthropic) -> _GraphNode:
             "plan": known,
             "iterations": state["iterations"] + 1,
             "llm_calls": 1,
+            "token_usage": [_usage_of(response, NODE_PLAN, PLANNER_MODEL)],
             "tool_records": rejected,
         }
 
@@ -409,13 +411,15 @@ def _make_assessor(client: anthropic.Anthropic) -> _GraphNode:
             ],
             output_format=Assessment,
         )
+        usage = [_usage_of(response, NODE_ASSESS, ASSESSMENT_MODEL)]
         verdict = response.parsed_output
         if verdict is None:
-            return {"sufficient": True, "gap": "", "llm_calls": 1}
+            return {"sufficient": True, "gap": "", "llm_calls": 1, "token_usage": usage}
         return {
             "sufficient": verdict.sufficient,
             "gap": verdict.gap.strip(),
             "llm_calls": 1,
+            "token_usage": usage,
         }
 
     return assess
@@ -446,6 +450,7 @@ def _make_synthesizer(client: anthropic.Anthropic, max_iterations: int) -> _Grap
         return {
             "answer": _text_of(response),
             "llm_calls": 1,
+            "token_usage": [_usage_of(response, NODE_SYNTHESIZE, SYNTHESIS_MODEL)],
             "outcome": _outcome(state, exhausted),
         }
 
@@ -504,6 +509,31 @@ def _tool_calls(response: Message) -> list[PlannedCall]:
         arguments = block.input if isinstance(block.input, dict) else {}
         calls.append(PlannedCall(call_id=block.id, name=block.name, arguments=dict(arguments)))
     return calls
+
+
+def _usage_of(response: object, node: str, model: str) -> TokenUsage:
+    """Read the token usage off a response, tolerating a shape that does not carry it.
+
+    The usage block is read defensively rather than indexed: an SDK that stops reporting a
+    field would otherwise turn a cost measurement into a crash in the middle of a run, and
+    a missing count is a gap in the estimate, not a failure of the answer.
+
+    Args:
+        response: Any Messages API response.
+        node: Graph node that made the call.
+        model: Model the call was billed against.
+
+    Returns:
+        The usage of that call, with zeros where the response reported nothing.
+    """
+    usage = getattr(response, "usage", None)
+    return TokenUsage(
+        node=node,
+        model=model,
+        input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+        output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+        cache_read_tokens=int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+    )
 
 
 def _text_of(response: Message) -> str:

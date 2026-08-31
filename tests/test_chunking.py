@@ -175,9 +175,7 @@ def test_the_context_header_is_kept_in_the_metadata_and_in_the_shown_text(corpus
 def test_the_encoded_text_is_the_warnings_plus_the_body_and_nothing_else(corpus_chunks):
     for chunk in corpus_chunks:
         expected = (
-            f"{chunk.integrity_notice}\n\n{chunk.body}"
-            if chunk.integrity_notice
-            else chunk.body
+            f"{chunk.integrity_notice}\n\n{chunk.body}" if chunk.integrity_notice else chunk.body
         )
         assert chunk.embed_text == expected, chunk.chunk_id
         assert chunk.body in chunk.embed_text, chunk.chunk_id
@@ -361,9 +359,7 @@ def test_every_chunk_of_the_synthetic_policy_declares_itself_synthetic(corpus_ch
 def test_every_chunk_of_the_derogated_chapter_says_so_inside_its_vector(corpus_chunks):
     """The other integrity warning: a derogated chapter quoted as law in force."""
     chapter_chunks = [
-        chunk
-        for chunk in corpus_chunks
-        if chunk.metadata.document_id == DEROGATED_DOCUMENT_ID
+        chunk for chunk in corpus_chunks if chunk.metadata.document_id == DEROGATED_DOCUMENT_ID
     ]
 
     assert chapter_chunks, "the derogated chapter produced no chunk"

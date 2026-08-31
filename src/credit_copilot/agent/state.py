@@ -35,6 +35,7 @@ __all__ = [
     "Citation",
     "Outcome",
     "PlannedCall",
+    "TokenUsage",
     "ToolRecord",
     "format_tool_records",
     "initial_state",
@@ -145,6 +146,30 @@ class Citation(BaseModel):
     integrity_notice: str = ""
 
 
+class TokenUsage(BaseModel):
+    """What one call to a language model consumed, and which model consumed it.
+
+    Recorded per call rather than summed, because the graph deliberately uses two models
+    at different prices. A single total would make the cost of a query depend on a mix
+    nobody could reconstruct afterwards.
+
+    Attributes:
+        node: Graph node that made the call.
+        model: Model identifier the call was billed against.
+        input_tokens: Prompt tokens, cached ones excluded.
+        output_tokens: Generated tokens.
+        cache_read_tokens: Prompt tokens served from cache, billed at a lower rate.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    node: str
+    model: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+
+
 class AgentState(TypedDict):
     """Everything the graph carries from one node to the next.
 
@@ -162,6 +187,7 @@ class AgentState(TypedDict):
         gap: What the assessor said was missing. Fed back into the next planning step and,
             when the cap is reached, into the answer.
         llm_calls: Calls to the language model made in this run. Accumulates.
+        token_usage: What each of those calls consumed. Accumulates.
         answer: The synthesised answer. Empty until the synthesis node runs.
         outcome: How the run ended; see `Outcome`.
     """
@@ -175,6 +201,7 @@ class AgentState(TypedDict):
     sufficient: bool
     gap: str
     llm_calls: Annotated[int, operator.add]
+    token_usage: Annotated[list[TokenUsage], operator.add]
     answer: str
     outcome: Outcome
 
@@ -203,6 +230,7 @@ def initial_state(query: str, applicant: Mapping[str, int] | None = None) -> Age
         sufficient=False,
         gap="",
         llm_calls=0,
+        token_usage=[],
         answer="",
         outcome="answered",
     )

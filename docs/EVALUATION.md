@@ -871,3 +871,86 @@ de chunking**: un recuperador denso no evalúa si 0,19 cae dentro de [0,160 ; 0,
 - **Lo que esta entrada NO dice:** que la estrategia adoptada sea la mejor. Está medido que no
   lo es en hit@k. La razón por la que se adopta está en el ADR-0008 y es una propiedad que
   ninguna de estas tablas refleja.
+
+---
+
+### 012 — El copiloto contra un set de consultas de analista, y contra un LLM sin herramientas
+
+- **Fecha:** 2026-08-31
+- **Fase:** 03-genai
+- **Estado: MEDICIÓN INCOMPLETA.** Cubrió **7 de las 19 consultas** antes de que la API de
+  Anthropic respondiera `Your credit balance is too low to access the Anthropic API`. **El
+  subconjunto no es aleatorio**: las consultas corren en el orden del archivo, de modo que lo
+  medido son las cuatro numéricas y las tres con solicitante, y **quedó sin correr todo lo que
+  probaba abstención, causalidad, límites y fallo ruidoso**. Cualquier lectura que extienda
+  estas cifras a esas capacidades es una extrapolación sin evidencia.
+- **Objeto evaluado:** el copiloto completo —cuatro herramientas con contrato Pydantic,
+  planificador `claude-haiku-4-5`, evaluador de suficiencia y sintetizador `claude-opus-5`,
+  ciclo acotado a 3 iteraciones— sobre el modelo anclado
+  `models:/credit-risk-default-probability/1`. **No se evalúa el modelo de riesgo**: sus siete
+  métricas fijas no aplican aquí porque el objeto es otro.
+- **Datos:** `data/eval/agent_queries.yaml`, **19 consultas anotadas a mano** escritas desde las
+  tareas de un analista y anotadas después; 16 con respuesta normativa en el corpus y 3 sin
+  ella, estas últimas **verificadas por búsqueda directa** sobre `data/corpus/`. De ellas
+  corrieron 7.
+- **Protocolo:** tres brazos sobre las mismas consultas. `agent` con herramientas y corpus;
+  `baseline` con el **mismo modelo y las mismas instrucciones**, sin herramientas ni corpus; y
+  `baseline-bare` con el rol y nada más. Los prompts del agente y del `baseline` se **componen
+  de los mismos tres bloques**, así que difieren en el bloque de capacidad y en nada más, y
+  `tests/test_agent_eval.py` lo afirma. Los baselines reciben los atributos crudos del
+  solicitante, que es generoso con ellos. **Ningún prompt se ajustó después de ver una cifra.**
+- **Anotación:** asistida por `claude-opus-5` a esfuerzo `medium`, con **comprobación mecánica
+  de cita**: toda afirmación que el juez llama sostenida debe traer una cita verbatim, y el
+  script verifica que esté en un fragmento que la corrida recibió. En esta corrida ninguna cita
+  ofrecida por el juez dejó de encontrarse. **Es anotación asistida y no verdad de campo.**
+
+**Métricas — 7 consultas, los tres brazos sobre el mismo conjunto**
+
+| métrica | **agent** | baseline | baseline-bare |
+| --- | ---: | ---: | ---: |
+| Afirmaciones normativas emitidas | 58 | 12 | 29 |
+| **Afirmaciones normativas sin respaldo, por consulta** | **0,29** | 1,71 | 4,14 |
+| Groundedness | 0,966 | 0,000 \* | 0,000 \* |
+| Afirmaciones sobre el mundo (grieta 2) | **0** | 12 | 22 |
+| Consultas con grieta 1 | 1 de 7 | 0 | 0 |
+| Recall de tool-calling | 1,000 | — | — |
+| Banda correcta (4 consultas numéricas) | **1,000** | 0,000 | 0,000 |
+| Llamadas al LLM por consulta | 3,57 | 1,00 | 1,00 |
+| Costo por consulta (USD) | 0,157 | 0,060 | 0,084 |
+
+\* Cero **por construcción y no por medición**: a un brazo sin corpus no se le suministró ningún
+fragmento, así que ninguna afirmación suya puede estar sostenida. La fila que compara de verdad
+es la de afirmaciones sin respaldo por consulta.
+
+- **Baseline — campo obligatorio.** El baseline es **el mismo modelo respondiendo las mismas
+  consultas sin herramientas ni corpus**, y es el correcto para esta medición porque la
+  hipótesis secundaria de `docs/ROADMAP.md` está formulada exactamente así. Se reporta además un
+  segundo brazo sin las reglas de honestidad del proyecto, que es lo que un equipo construiría
+  por defecto. Sus valores están en la tabla, en las mismas métricas y sobre las mismas
+  consultas.
+- **Resultado.** Sobre las 7 consultas medidas el contraste va **en la dirección de la
+  hipótesis secundaria**: el agente emite casi cinco veces más afirmaciones normativas que el
+  baseline (58 contra 12) con **0,29 sin respaldo por consulta frente a 1,71**, y **ninguna**
+  afirmación sobre el mundo frente a 12. Acierta la banda en las cuatro consultas numéricas,
+  incluida la del borde exacto 0,060, que es la forma que falló fuera del top-10 en las cuatro
+  estrategias de chunking de la entrada 011. **El set no alcanza para declarar la hipótesis
+  contrastada**: falta la mitad que probaba precisamente lo que la hipótesis llama
+  «verificable», que es abstenerse cuando no hay fuente.
+- **El hallazgo incómodo.** El brazo `baseline` conserva **literalmente** la regla de que solo
+  puede citar lo que una herramienta le devolvió, y aun así emitió 12 afirmaciones normativas
+  sin respaldo. Las reglas de honestidad por sí solas redujeron la afirmación sin fuente a menos
+  de la mitad frente al brazo sin reglas y **no la eliminaron**.
+- **Las dos grietas del ADR-0009.** La grieta 1 —el sintetizador atribuyendo una banda que
+  ninguna herramienta resolvió— **apareció en 1 de 7**, en la consulta del borde: atribuyó la
+  banda A a 0,0599 leyendo la tabla del fragmento citado. La atribución es correcta, y esa es la
+  lección. La grieta 2 quedó en **0 de 7**, con la advertencia de que las consultas que crean la
+  presión para inventar son justamente las que no corrieron.
+- **Lo que quedó sin medir.** La decisión 1 del ADR-0009 —la abstención por juicio de contenido
+  en vez de por umbral de puntaje— **no tiene ninguna cifra**: sus tres consultas no corrieron.
+  Se observó además un límite del instrumento: el flag de abstención del anotador confunde «no
+  pude responder» con «no pude establecer un punto concreto», y marcó como abstención dos
+  respuestas que sí respondieron.
+- **Reproducción:** `uv run python scripts/evaluate_agent.py`, o
+  `uv run python scripts/evaluate_agent.py --resume` para continuar sobre una transcripción
+  existente. Experimento `credit-risk-agent` en MLflow. Evidencia completa en
+  [`docs/analysis/agent-evaluation-evidence.md`](analysis/agent-evaluation-evidence.md).

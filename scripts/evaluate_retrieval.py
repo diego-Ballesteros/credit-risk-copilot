@@ -119,14 +119,79 @@ _MIN_CONTENT_WORD_LENGTH: Final[int] = 4
 
 _STOPWORDS: Final[frozenset[str]] = frozenset(
     {
-        "algun", "alguna", "algunas", "alguno", "algunos", "ante", "antes", "aquel",
-        "cada", "como", "con", "contra", "cual", "cuales", "cuando", "cuanto", "desde",
-        "donde", "dos", "ella", "ellas", "ellos", "entre", "esa", "esas", "ese", "eso",
-        "esos", "esta", "estan", "estas", "este", "esto", "estos", "hace", "hacer",
-        "hasta", "hay", "las", "los", "mas", "mismo", "mucho", "muy", "nada", "para",
-        "pero", "por", "porque", "puede", "pueden", "que", "quien", "quienes", "segun",
-        "ser", "sido", "sin", "sobre", "solo", "son", "tambien", "tanto", "tener",
-        "tengo", "tiene", "tienen", "todo", "todos", "una", "unas", "uno", "unos",
+        "algun",
+        "alguna",
+        "algunas",
+        "alguno",
+        "algunos",
+        "ante",
+        "antes",
+        "aquel",
+        "cada",
+        "como",
+        "con",
+        "contra",
+        "cual",
+        "cuales",
+        "cuando",
+        "cuanto",
+        "desde",
+        "donde",
+        "dos",
+        "ella",
+        "ellas",
+        "ellos",
+        "entre",
+        "esa",
+        "esas",
+        "ese",
+        "eso",
+        "esos",
+        "esta",
+        "estan",
+        "estas",
+        "este",
+        "esto",
+        "estos",
+        "hace",
+        "hacer",
+        "hasta",
+        "hay",
+        "las",
+        "los",
+        "mas",
+        "mismo",
+        "mucho",
+        "muy",
+        "nada",
+        "para",
+        "pero",
+        "por",
+        "porque",
+        "puede",
+        "pueden",
+        "que",
+        "quien",
+        "quienes",
+        "segun",
+        "ser",
+        "sido",
+        "sin",
+        "sobre",
+        "solo",
+        "son",
+        "tambien",
+        "tanto",
+        "tener",
+        "tengo",
+        "tiene",
+        "tienen",
+        "todo",
+        "todos",
+        "una",
+        "unas",
+        "uno",
+        "unos",
     }
 )
 """Spanish function words excluded from the overlap measurement, so it counts substance."""
@@ -477,9 +542,7 @@ def evaluate_strategy(
                     else set()
                     for passage in ranked
                 ),
-                document_rank=_first_rank(
-                    passage.document_id in documents for passage in ranked
-                ),
+                document_rank=_first_rank(passage.document_id in documents for passage in ranked),
                 top_scores=tuple(float(similarity[row][index]) for index in order),
                 top_locations=tuple(_describe(passage) for passage in ranked),
             )
@@ -487,9 +550,7 @@ def evaluate_strategy(
     return tuple(outcomes)
 
 
-def measure_homogenisation(
-    strategy: Strategy, model: EmbeddingModel
-) -> tuple[float, float]:
+def measure_homogenisation(strategy: Strategy, model: EmbeddingModel) -> tuple[float, float]:
     """How alike a strategy makes two passages of the same document, against two of different ones.
 
     This is the mechanism behind the header's cost, measured rather than argued. The context
@@ -607,9 +668,7 @@ def compute_metrics(strategy: Strategy, outcomes: Sequence[QuestionOutcome]) -> 
         miss_scores=tuple(o.top_score for o in answerable if o.unit_rank != 1),
         unanswerable_scores=tuple(o.top_score for o in unanswerable),
         margins=tuple(o.margin for o in answerable),
-        units_per_passage=statistics.fmean(
-            len(passage.unit_ids) for passage in strategy.passages
-        ),
+        units_per_passage=statistics.fmean(len(passage.unit_ids) for passage in strategy.passages),
         chars_per_passage=statistics.fmean(len(passage.text) for passage in strategy.passages),
     )
 
@@ -804,8 +863,9 @@ def print_common_failures(
         question
         for question in questions
         if question.answerable
-        and all(not 0 < ranks[strategy.key][question.question_id] <= cutoff
-                for strategy in strategies)
+        and all(
+            not 0 < ranks[strategy.key][question.question_id] <= cutoff for strategy in strategies
+        )
     ]
     print()
     print(_RULE)
@@ -815,9 +875,7 @@ def print_common_failures(
     print("Dice algo sobre el recuperador o sobre el corpus.")
     print()
     for question in missed:
-        best = min(
-            (ranks[strategy.key][question.question_id] or 99) for strategy in strategies
-        )
+        best = min((ranks[strategy.key][question.question_id] or 99) for strategy in strategies)
         depth = (
             f"mejor puesto {best}" if best <= RANKING_DEPTH else f"fuera del top-{RANKING_DEPTH}"
         )
@@ -849,8 +907,10 @@ def print_scores(strategies: Sequence[Strategy], metrics: Sequence[StrategyMetri
     print(_RULE)
     print("DISTRIBUCIÓN DEL SCORE DE SIMILITUD DEL PRIMER RESULTADO")
     print(_RULE)
-    print(f"{'':<3} {'min':>8} {'p25':>8} {'mediana':>8} {'p75':>8} {'max':>8} {'rango':>8} "
-          f"{'desv':>8}   estrategia")
+    print(
+        f"{'':<3} {'min':>8} {'p25':>8} {'mediana':>8} {'p75':>8} {'max':>8} {'rango':>8} "
+        f"{'desv':>8}   estrategia"
+    )
     print("-" * 88)
     for strategy, metric in zip(strategies, metrics, strict=True):
         summary = metric.score_summary
@@ -1029,8 +1089,10 @@ def main() -> int:
     }
     answerable = sum(1 for question in questions if question.answerable)
     print(f"Documentos            : {len(documents)}")
-    print(f"Preguntas             : {len(questions)}  "
-          f"({answerable} con respuesta, {len(questions) - answerable} sin respuesta)")
+    print(
+        f"Preguntas             : {len(questions)}  "
+        f"({answerable} con respuesta, {len(questions) - answerable} sin respuesta)"
+    )
     print(f"Modelo de embeddings  : {EMBEDDING_MODEL_NAME}")
     print("Búsqueda              : exacta (producto punto), no el índice HNSW de producción")
 
@@ -1127,9 +1189,7 @@ def _record(
             recorded["mrr"] = metric.mrr
             recorded["top1_score_median"] = metric.score_summary["median"]
             recorded["top1_score_stdev"] = metric.score_summary["stdev"]
-            recorded["top1_score_span"] = (
-                metric.score_summary["max"] - metric.score_summary["min"]
-            )
+            recorded["top1_score_span"] = metric.score_summary["max"] - metric.score_summary["min"]
             recorded["margin_top1_top5_mean"] = statistics.fmean(metric.margins)
             recorded["unanswerable_top1_max"] = max(metric.unanswerable_scores)
             recorded["lexical_overlap_mean"] = statistics.fmean(overlaps.values())

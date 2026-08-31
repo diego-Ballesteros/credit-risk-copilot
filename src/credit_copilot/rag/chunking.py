@@ -437,9 +437,7 @@ def _paragraphs(body: str) -> list[str]:
     return [block.strip() for block in body.split("\n\n") if block.strip()]
 
 
-def _split_long_paragraph(
-    paragraph: str, max_body_chars: int, overlap_chars: int
-) -> list[str]:
+def _split_long_paragraph(paragraph: str, max_body_chars: int, overlap_chars: int) -> list[str]:
     """Split one over-long paragraph at sentence ends, falling back to a character cut."""
     pieces: list[str] = []
     remaining = paragraph

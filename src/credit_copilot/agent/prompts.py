@@ -36,6 +36,8 @@ from credit_copilot.agent.state import Citation, ToolRecord, format_tool_records
 
 __all__ = [
     "ASSESSMENT_INSTRUCTIONS",
+    "BARE_BASELINE_SYSTEM_PROMPT",
+    "BASELINE_SYSTEM_PROMPT",
     "PLANNER_INSTRUCTIONS",
     "SYNTHESIS_INSTRUCTIONS",
     "SYSTEM_PROMPT",
@@ -44,11 +46,14 @@ __all__ = [
     "render_synthesis_message",
 ]
 
-SYSTEM_PROMPT: Final[str] = """\
+_ROLE: Final[str] = """\
 Eres el copiloto de riesgo de crédito de una entidad financiera. Asistes a un analista que
 estudia solicitudes de crédito de consumo rotativo. No decides: aportas evidencia trazable
 para que decida una persona.
+"""
+"""Who the copilot is. Shared, verbatim, by the agent and by both contrast baselines."""
 
+_WITH_TOOLS: Final[str] = """\
 ## Qué tienes
 
 Cuatro herramientas. El modelo de lenguaje PROPONE la llamada; el código la VALIDA y la
@@ -60,7 +65,19 @@ sistema, no tú.
 - `simular_escenario`: qué diría el modelo sobre un solicitante con otros atributos.
 - `consultar_politica`: fragmentos del corpus normativo con su cita; si hay una probabilidad
   en juego, además resuelve la banda de decisión comparando rangos en código.
+"""
+"""The capability the agent has. **This block is the entire difference against the baseline.**"""
 
+_WITHOUT_TOOLS: Final[str] = """\
+## Qué tienes
+
+**Ninguna herramienta y ningún corpus.** No puedes puntuar a un solicitante, no puedes
+calcular una explicación local, no puedes simular un escenario y no puedes recuperar ningún
+fragmento normativo. Respondes con lo que tengas y nada más.
+"""
+"""What the strict baseline has instead. Substituted for `_WITH_TOOLS`; nothing else moves."""
+
+_RULES: Final[str] = """\
 ## Reglas que no se negocian
 
 1. **Ninguna afirmación normativa sin su cita.** Si dices que la norma exige algo, la frase
@@ -110,7 +127,43 @@ sistema, no tú.
 En español, para un analista de crédito. Directo, sin relleno y sin adular. Los números con
 coma decimal. Las citas, tal como te las devuelve la herramienta.
 """
+"""Everything after the capability block. Shared, verbatim, by the agent and by the baseline."""
+
+_BLANK_LINE: Final[str] = "\n"
+"""One blank line between the three blocks a system prompt is composed of."""
+
+SYSTEM_PROMPT: Final[str] = _ROLE + _BLANK_LINE + _WITH_TOOLS + _BLANK_LINE + _RULES
 """The shared system prompt. Identical in the three nodes, so the model's frame never shifts."""
+
+BASELINE_SYSTEM_PROMPT: Final[str] = _ROLE + _BLANK_LINE + _WITHOUT_TOOLS + _BLANK_LINE + _RULES
+"""The contrast arm: the same model, the same instructions, **without tools and without corpus**.
+
+**Why it is composed and not written out.** The contrast is only valid if the two arms differ
+in one factor. Written by hand, the two prompts would drift the first time somebody edited one
+of them, and that drift would look exactly like a result. Composed from the same three pieces,
+the difference is `_WITH_TOOLS` against `_WITHOUT_TOOLS` and it cannot be anything else;
+`tests/test_agent_eval.py` asserts that the role and the rules are byte-identical across both.
+
+**What that means for the rules that mention tools, and why they stay.** Rule 1 says the only
+citable thing is what a tool returned in this conversation, and rule 3 quotes the retriever's
+measured hit@5. Both stay **verbatim** in the baseline. That is not an instruction the baseline
+was handed unfairly - it is the consequence of not having the capability, which is precisely
+the factor under test. A baseline that cites anyway is producing the hallucination this
+contrast exists to measure, and softening the rule for it would measure a different prompt
+instead of a different capability.
+"""
+
+BARE_BASELINE_SYSTEM_PROMPT: Final[str] = (
+    _ROLE + "Responde la consulta del analista lo mejor que puedas, en español.\n"
+)
+"""A second contrast arm: the role, and nothing else.
+
+`BASELINE_SYSTEM_PROMPT` isolates the *capability* by holding every instruction constant, and
+that is the arm the comparison is decided on. This one isolates something different and worth
+knowing: **what a team gets if it wires the same model to the same question without any of
+this project's honesty rules.** It is the thing that would actually be built, so its numbers
+say what the rules are worth on their own, separately from what the tools are worth.
+"""
 
 PLANNER_INSTRUCTIONS: Final[str] = """\
 Eres el planificador. Decide qué herramientas hacen falta para responder la consulta y

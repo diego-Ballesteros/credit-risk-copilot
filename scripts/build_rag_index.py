@@ -168,8 +168,10 @@ def _report_model(model: EmbeddingModel, chunks: Sequence[Chunk]) -> None:
     print(f"  name           : {model.name}")
     print(f"  dimension      : {model.dimension}")
     print(f"  window         : {window} tokens")
-    print(f"  chunk tokens   : min {min(tokens)} | median {sorted(tokens)[len(tokens) // 2]} "
-          f"| max {max(tokens)}")
+    print(
+        f"  chunk tokens   : min {min(tokens)} | median {sorted(tokens)[len(tokens) // 2]} "
+        f"| max {max(tokens)}"
+    )
     print(f"  headroom       : {window - max(tokens)} tokens below the window at the worst chunk")
     if over:
         print(f"  TRUNCATED      : {len(over)} chunk(s) exceed the window and lose their tail:")
