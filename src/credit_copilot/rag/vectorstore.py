@@ -21,6 +21,14 @@ answered out of the synthetic internal policy, and *"¿en qué banda cae un scor
 no answer in the public regulation at all. A retriever that cannot be told where to look forces
 the caller to filter after the fact, on a top-k that may already be full of the wrong document.
 
+**Why what is encoded is not what is stored.** ADR-0008 took the context header out of the
+vector and left it beside it, so a chunk has two texts: `embed_text`, which becomes the
+vector, and `display_text`, which is what a person reads. This module encodes the first and
+stores the second, so a retrieved result arrives already carrying its document, its location
+and its citation while none of that was ever charged to the encoder. Storing `embed_text`
+instead would show the reader a fragment stripped of its source; encoding `display_text`
+would silently undo the ADR and nothing would fail.
+
 **On the score.** The collection is created with cosine distance, so Chroma returns
 `1 - cosine_similarity`. `SearchResult.score` reports the similarity, because a number that
 grows as the match improves is the one a report can be read against without a footnote.
@@ -154,11 +162,12 @@ class VectorStore:
         collection = self._create_collection()
         for start in range(0, len(chunks), _ADD_BATCH_SIZE):
             batch = chunks[start : start + _ADD_BATCH_SIZE]
-            texts = [chunk.text for chunk in batch]
             collection.add(
                 ids=[chunk.chunk_id for chunk in batch],
-                documents=texts,
-                embeddings=self._embedding_model.embed_passages(texts),
+                documents=[chunk.display_text for chunk in batch],
+                embeddings=self._embedding_model.embed_passages(
+                    [chunk.embed_text for chunk in batch]
+                ),
                 metadatas=[chunk.metadata.to_index_metadata() for chunk in batch],
             )
         return len(chunks)

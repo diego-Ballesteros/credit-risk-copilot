@@ -1,56 +1,62 @@
-"""The chunking strategy: structural units, context embedded in the text, safe subdivision.
+"""The chunking strategy: structural units, integrity warnings in the vector, context beside it.
 
-Three principles, in this order. They are not independent: the second only pays off because
-the first holds, and the third exists so the first can be broken without losing the second.
+The shape of this module changed once, on measured evidence. **An earlier version embedded
+the whole context header - document, issuer, structural path - into the text that gets
+encoded, on the argument that a bare fragment reading *"el porcentaje mínimo será del 20%"*
+produces a vector that does not encode what it is about.** The argument is intuitive and the
+measurement went the other way. `docs/analysis/retrieval-evidence.md` and ADR-0008 hold the
+numbers; the short version is that the header is a near-identical block repeated on every
+chunk of a document, so it pulled that document's vectors together until any two fragments of
+one document sat at 0.9423 cosine similarity. Routing to the right document got easier and
+telling two articles of it apart got harder, which is the half that matters.
+
+Three principles now, and the second is the one that was rewritten.
 
 **1. The boundary of a chunk is a structural unit of the document, never a character count.**
 Regulation arrives already segmented into chapters, articles, numerals and literals. That
 segmentation is not decoration: it is the unit of meaning its drafters chose, and it is the
-unit an analyst cites. Cutting every N characters destroys a structure the document already
-provides and produces fragments that begin mid-sentence and belong to nothing. The one thing
-a fixed-size cut buys - uniform chunks - is worth less than the thing it costs.
+unit an analyst cites. **This principle survived the measurement without being confirmed by
+it**: against a fixed-length baseline the two tied within one question. It is kept for a
+property no metric here reports - a chunk that coincides with an article can be cited to a
+committee, and a 700-character window corresponds to nothing. ADR-0008, decision 1.
 
-**2. The metadata is embedded in the text of the chunk, not only in the index.** A fragment
-reading *"el porcentaje mínimo será del 20%"* produces an embedding that does not encode what
-it is about; nothing in those six words says credit, or provisioning, or which rule. The same
-fragment preceded by its document, its chapter and its article produces a vector that encodes
-the context, so a question phrased in the vocabulary of the domain can reach it. The second
-payoff is free: the citation is already inside the text the model reads, so an agent that
-quotes the fragment quotes its source with it, rather than reconstructing the reference from
-a metadata field it may or may not consult.
+**2. The context header is kept in the index metadata and out of the encoded text; the
+integrity warnings stay in.** The split is not a compromise, it is the distinction the
+evidence forced. The header answers *where does this come from*, and a retriever pays for it
+in discrimination while gaining nothing a metadata field cannot give for free - the citation
+travels perfectly well beside the vector. An integrity warning answers *is this text what it
+appears to be*, and that has to reach a reader who sees only the fragment: a policy fragment
+that does not declare itself synthetic gets quoted as real regulation, and a derogated
+chapter that does not say so gets quoted as law in force. Those warnings are embedded, their
+cost in homogenisation is accepted, and it is measured rather than assumed. ADR-0008,
+decisions 2 and 3.
 
-**3. When a unit exceeds the maximum size it is subdivided, and every subchunk keeps the
-header of its parent unit.** Subdivision is the exception, not the rule, and it is a
-concession to the encoder's context window rather than a strategy in its own right. A
-subchunk that lost its parent heading would be exactly the orphan fragment principle 1 was
-written to avoid, so the header is repeated verbatim on each part and the part is numbered
-inside its unit.
+**3. When a unit exceeds the maximum size it is subdivided, and every part keeps the identity
+of its parent unit.** Subdivision is the exception and a concession to the encoder's window,
+not a strategy of its own. The parts share their unit identifier and carry the same context
+header and the same warnings, so no part is ever an orphan.
 
 ---
 
-WHAT IS EMBEDDED IN THE TEXT AND WHAT IS ONLY IN THE INDEX
-----------------------------------------------------------
+WHAT IS ENCODED AND WHAT IS ONLY STORED
+---------------------------------------
 
-The separating question is: **does a reader who sees only this fragment need it to understand
-what the fragment says?** If yes, it goes in the text and is embedded with it. If it is a
-handle for filtering, tracing or displaying, it goes in the index metadata, where it can be
-read without polluting the vector.
+The separating question is no longer "does a reader need it" - the header passed that test
+and still cost hit@k. It is: **would a fragment lacking this be actively misleading?**
 
-Embedded in the text: the document title and issuer, the validity note, the synthetic
-warning, the full structural path, and the part number when the unit was subdivided. Each one
-changes how the body is to be read. The synthetic warning is the clearest case - a policy
-fragment that does not say it is synthetic is a fragment that will be quoted as if it were
-real, and a note in the README does not travel with it.
+Encoded (`Chunk.embed_text`): the body, and the integrity warnings. Nothing else. A missing
+warning turns a synthetic policy into a citation; a missing document title merely makes a
+true fragment harder to place, and the metadata places it.
 
-Index metadata only: the chunk and unit identifiers, the source URL, the retrieval date, the
-scope note, and the character counts. An identifier and a URL tokenise into noise and carry
-no meaning a question could match; the scope note describes **our extraction**, which is a
-fact about this repository rather than about the norm.
+Stored, never encoded (`Chunk.context_header` and the metadata): document title, issuer,
+citation, structural path, part numbering, status note, source URL, retrieval date, scope
+note, character counts. `Chunk.display_text` assembles the header and the body for anything
+that shows a result to a human.
 
-Everything embedded is also stored in the index, because a consumer needs to filter on the
-document and display the citation without parsing the text back. That duplication is the
-reason `tests/test_chunking.py` asserts the two cannot contradict each other: two copies of a
-fact diverge unless something forbids it.
+The warnings therefore appear in both `embed_text` and `display_text`, and the citation
+appears only in the metadata and the display. Two copies of one fact drift apart unless
+something forbids it, which is why `tests/test_chunking.py` asserts they cannot contradict
+each other.
 """
 
 from collections.abc import Iterable, Mapping, Sequence
@@ -125,13 +131,16 @@ class ChunkMetadata:
         is_synthetic: Whether the document was written for this project rather than issued.
         part_index: Position of this chunk inside its unit, starting at 1.
         part_count: Number of parts the unit was split into. 1 when it was not split.
-        body_chars: Length of the body, without the context header.
-        text_chars: Length of the finished chunk, header included.
+        context_header: The context block. Stored here and shown; never encoded.
+        body_chars: Length of the body alone.
+        embed_chars: Length of the text that is encoded: warnings plus body.
+        display_chars: Length of the text shown to a human: header plus body.
         source_url: Where the document was taken from, when it has a source.
         retrieved_at: Date the document was taken from its source.
-        status_note: Short statement of validity. Embedded in the text when present.
+        status_note: Short statement of validity. Displayed, never encoded.
         scope_note: What was transcribed and what was left out. Index metadata only.
-        synthetic_notice: Warning carried in the text of every chunk of a synthetic document.
+        synthetic_notice: Warning that the document was written for this project. Encoded.
+        integrity_notice: Warning that the text is not what it appears to be. Encoded.
     """
 
     chunk_id: str
@@ -145,13 +154,16 @@ class ChunkMetadata:
     is_synthetic: bool
     part_index: int
     part_count: int
+    context_header: str
     body_chars: int
-    text_chars: int
+    embed_chars: int
+    display_chars: int
     source_url: str | None = None
     retrieved_at: str | None = None
     status_note: str | None = None
     scope_note: str | None = None
     synthetic_notice: str | None = None
+    integrity_notice: str | None = None
 
     def to_index_metadata(self) -> dict[str, str | int | bool]:
         """Flatten to the scalar types a vector store accepts.
@@ -172,22 +184,28 @@ class ChunkMetadata:
 
 @dataclass(frozen=True)
 class Chunk:
-    """One indexable fragment: its embedded text, its body alone, and its metadata.
+    """One indexable fragment, with the encoded text and the shown text kept apart.
 
-    `text` is what gets embedded and what a retriever returns; `header` and `body` are kept
-    apart so a test, a report or a user interface can look at either half without splitting
-    the string back on a separator.
+    The two differ on purpose and confusing them is the mistake this class exists to make
+    hard: `embed_text` is what becomes a vector and `display_text` is what a person reads.
+    They are built here rather than assembled by each caller, because a caller that encoded
+    `display_text` would silently undo ADR-0008 and nothing would fail.
 
     Attributes:
-        header: Context block prepended to the body, per principle 2.
-        body: The document text of the fragment, with no context added.
-        text: Header and body joined. The string that is embedded.
+        body: The document text of the fragment, with nothing added.
+        integrity_notice: The warnings that must reach a reader of the fragment alone.
+            Empty when the document declares none.
+        context_header: Document, issuer, location and part numbering. Shown, never encoded.
+        embed_text: Warnings plus body. **The string that is encoded.**
+        display_text: Header plus body. What a result shows to a human.
         metadata: Everything the index stores about this chunk.
     """
 
-    header: str
     body: str
-    text: str
+    integrity_notice: str
+    context_header: str
+    embed_text: str
+    display_text: str
     metadata: ChunkMetadata
 
     @property
@@ -198,6 +216,15 @@ class Chunk:
             The `chunk_id` of the metadata.
         """
         return self.metadata.chunk_id
+
+    @property
+    def has_integrity_notice(self) -> bool:
+        """Whether this chunk carries a warning inside its encoded text.
+
+        Returns:
+            True when the source document declared a synthetic or integrity notice.
+        """
+        return bool(self.integrity_notice)
 
 
 def chunk_document(
@@ -279,15 +306,19 @@ def _build_chunk(
     part_index: int,
     part_count: int,
 ) -> Chunk:
-    """Assemble the header, the body and the metadata of a single chunk."""
+    """Assemble the encoded text, the shown text and the metadata of a single chunk."""
     metadata = document.metadata
-    header = _build_header(document, unit, part_index, part_count)
-    text = f"{header}\n\n{body}"
+    notice = _build_integrity_notice(document)
+    header = _build_context_header(document, unit, part_index, part_count)
+    embed_text = f"{notice}\n\n{body}" if notice else body
+    display_text = f"{header}\n\n{body}"
     suffix = f"#{part_index:02d}" if part_count > 1 else ""
     return Chunk(
-        header=header,
         body=body,
-        text=text,
+        integrity_notice=notice,
+        context_header=header,
+        embed_text=embed_text,
+        display_text=display_text,
         metadata=ChunkMetadata(
             chunk_id=f"{unit.unit_id}{suffix}",
             unit_id=unit.unit_id,
@@ -300,33 +331,46 @@ def _build_chunk(
             is_synthetic=metadata.is_synthetic,
             part_index=part_index,
             part_count=part_count,
+            context_header=header,
             body_chars=len(body),
-            text_chars=len(text),
+            embed_chars=len(embed_text),
+            display_chars=len(display_text),
             source_url=metadata.source_url,
             retrieved_at=metadata.retrieved_at,
             status_note=metadata.status_note,
             scope_note=metadata.scope_note,
             synthetic_notice=metadata.synthetic_notice,
+            integrity_notice=metadata.integrity_notice,
         ),
     )
 
 
-def _build_header(
+def _build_integrity_notice(document: SourceDocument) -> str:
+    """Write the warning block that goes *inside* the encoded text, per ADR-0008.
+
+    Only warnings land here. A status note saying a law is in force is context and stays
+    out; a notice saying the document is synthetic, or that a chapter was derogated, says
+    the fragment is not what it looks like and has to travel with it.
+    """
+    warnings = document.metadata.integrity_warnings
+    return "\n".join(f"AVISO: {warning}" for warning in warnings)
+
+
+def _build_context_header(
     document: SourceDocument,
     unit: DocumentUnit,
     part_index: int,
     part_count: int,
 ) -> str:
-    """Write the context block that principle 2 puts in front of every body.
+    """Write the context block that is stored and shown, and never encoded.
 
     The order is deliberate. What the document *is* comes first, because it conditions
-    everything after it; the synthetic warning comes second so it cannot be read as a
-    footnote to the location; the location comes last, closest to the text it locates.
+    everything after it; the warnings come second so they cannot be read as a footnote to
+    the location; the location comes last, closest to the text it locates.
     """
     metadata = document.metadata
     lines = [f"Documento: {metadata.title} — {metadata.issuer}."]
-    if metadata.is_synthetic and metadata.synthetic_notice:
-        lines.append(f"Aviso: {metadata.synthetic_notice}")
+    lines.extend(f"Aviso: {warning}" for warning in metadata.integrity_warnings)
     if metadata.status_note:
         lines.append(f"Estado: {metadata.status_note}")
     lines.append(f"Ubicación: {unit.location}.")
@@ -431,16 +475,19 @@ def _prefix_overlap(previous: str, overlap_chars: int) -> str:
 
 
 def summarise_lengths(chunks: Iterable[Chunk]) -> Mapping[str, float]:
-    """Describe the distribution of finished chunk lengths, in characters.
+    """Describe the distribution of encoded chunk lengths, in characters.
+
+    It summarises `embed_chars` and not `display_chars`, because the length that matters is
+    the one the encoder has to fit in its window. The shown text can be as long as it likes.
 
     Args:
         chunks: Chunks to describe.
 
     Returns:
-        Count, minimum, maximum, mean and the quartiles of `text_chars`. An empty input
+        Count, minimum, maximum, mean and the quartiles of `embed_chars`. An empty input
         gives a count of zero and nothing else, rather than a division by zero.
     """
-    lengths = sorted(chunk.metadata.text_chars for chunk in chunks)
+    lengths = sorted(chunk.metadata.embed_chars for chunk in chunks)
     if not lengths:
         return {"count": 0}
     return {

@@ -7,7 +7,7 @@ language: es
 is_synthetic: false
 source_url: https://gestornormativo.creg.gov.co/gestor/entorno/docs/circular_superbancaria_csb10095.htm
 retrieved_at: 2026-08-30
-status_note: Capítulo DEROGADO desde el 1 de junio de 2023 por la Circular Externa 018 de 2021; no describe la norma vigente.
+integrity_notice: Capítulo DEROGADO desde el 1 de junio de 2023 por la Circular Externa 018 de 2021; no describe la norma vigente.
 scope_note: Capítulo derogado a partir del 1 de junio de 2023 por la Circular Externa 018 de 2021, fecha en la que entran en vigencia los Capítulos XXXI (SIAR) y XXXII (SARE); el texto se conserva por su valor de referencia sobre criterios de otorgamiento y de calificación. Extracto parcial. Se transcriben las consideraciones generales y los numerales 1.1, 1.2, 1.3.2.3.1 (literales a, b y c), 2.1.2, 2.2 (literal a) y 2.2.3. Se omiten el literal d y siguientes del numeral 1.3.2.3.1 sobre garantías, el literal b del numeral 2.2 sobre homologación de calificaciones reportadas, y el resto del capítulo. Del texto fuente se eliminaron los enlaces de navegación del compilador ("Notas de Vigencia", "Legislación Anterior", "Jurisprudencia Vigencia") y las marcas de paginación de las circulares originales; las anotaciones de vigencia entre paréntesis angulares se conservan literalmente.
 ---
 

@@ -216,3 +216,144 @@ entrada corregida se corrige con una entrada nueva que referencia a la anterior.
   vacía** que se parece a una verificación. Los tres fallos comparten que **el verde no
   significaba lo que parecía significar**, y los tres se detectaron preguntando
   explícitamente qué estaba comprobando el verde.
+
+---
+
+### 004 — El paquete instala sin error y falla al importar: la DLL está, el runtime no
+
+- **Fecha:** 2026-08-30
+- **Fase:** 03-genai *(la primera ocurrencia fue en 02-modeling, 2026-08-26)*
+
+- **Síntoma:** `uv add sentence-transformers` termina en verde. El primer `import` revienta:
+
+      OSError: [WinError 126] No se puede encontrar el módulo especificado.
+      Error loading "...\.venv\Lib\site-packages\torch\lib\c10.dll" or one of its dependencies.
+
+  El mensaje señala un archivo **que existe**. `c10.dll` está donde dice, con el tamaño que le
+  corresponde, y aun así "no se puede encontrar el módulo".
+
+- **Causa raíz:** el wheel trae la biblioteca dinámica pero **no el runtime del que ella
+  depende**. `c10.dll` está compilada contra el runtime de Microsoft Visual C++ y lo enlaza
+  dinámicamente, así que cargarla exige `vcruntime140.dll`, `vcruntime140_1.dll`,
+  `msvcp140.dll` y `msvcp140_1.dll` en el sistema. Este equipo tenía **únicamente las
+  variantes `*_clr0400`** —`msvcp140_clr0400.dll`, `vcruntime140_clr0400.dll`—, que son las
+  que empaqueta .NET y **no sirven** como el runtime de C++ que busca el cargador.
+
+  El mensaje de Windows dice "no se puede encontrar el módulo" refiriéndose a **una
+  dependencia** de la DLL nombrada, no a la DLL nombrada. Esa ambigüedad es la mitad del
+  problema: manda a verificar el archivo que sí está.
+
+  Y la razón de que el gestor de paquetes reporte éxito es que **instalar y cargar son
+  operaciones distintas**. `uv` descarga, verifica el hash y coloca los archivos; nunca ejecuta
+  el cargador dinámico del sistema operativo. Un paquete puede quedar perfectamente instalado
+  y ser imposible de importar, y ninguna herramienta de empaquetado está en posición de
+  advertirlo.
+
+- **Diagnóstico:** no se dedujo del mensaje sino **comprobando qué había en `System32`**, que
+  es la afirmación negativa que el mensaje sugería y no demostraba:
+
+      vcruntime140.dll        MISSING
+      vcruntime140_1.dll      MISSING
+      msvcp140.dll            MISSING
+      msvcp140_1.dll          MISSING
+      msvcp140_clr0400.dll    PRESENT
+      vcruntime140_clr0400.dll PRESENT
+
+  Cuatro ausentes y las variantes de .NET presentes. Con eso el mensaje deja de leerse como
+  "falta `c10.dll`" y pasa a leerse como lo que es.
+
+  Se descartó por el camino la hipótesis de un wheel corrupto —el hash estaba verificado— y la
+  de una versión de Python incompatible: el wheel era el correcto para 3.11 en Windows x64.
+
+- **Solución:** `winget install --id Microsoft.VCRedist.2015+.x64` (14.51.36247.0). Las cuatro
+  DLL pasaron a estar presentes y `torch 2.13.0+cpu` importó. **La instalación de un runtime
+  del sistema se consultó antes de ejecutarla**: es un cambio fuera del repositorio y la
+  decisión no le corresponde al Ejecutor.
+
+- **Prevención:** ninguna herramienta del proyecto puede impedir esto, y decirlo es más útil
+  que inventar una defensa. Lo que sí queda es **un diagnóstico de dos minutos escrito**: ante
+  un `import` que falla nombrando una DLL que existe, la primera comprobación es el runtime en
+  `System32`, no el paquete. `scripts/build_rag_index.py` y `scripts/evaluate_retrieval.py`
+  atrapan el fallo de carga del modelo y salen con código 1 nombrándolo, en vez de arrastrar
+  una traza de importación.
+
+- **Aprendizaje:** **es una clase de error, no un incidente.** Ocurrió **dos veces con cuatro
+  días de diferencia** y el mismo mecanismo exacto: el 2026-08-26 con **LightGBM**
+  (`lib_lightgbm.dll`, ver la nota del stack en `docs/ROADMAP.md`) y el 2026-08-30 con
+  **torch**. La primera vez se resolvió sustituyendo la dependencia, que era barato porque
+  `HistGradientBoostingClassifier` hacía lo mismo; la segunda no había sustituto, porque
+  `sentence-transformers` era un requisito explícito.
+
+  La regla generalizable: **en Windows, "instala" y "carga" son dos garantías distintas, y el
+  verde del gestor de paquetes solo cubre la primera.** Cualquier dependencia con extensiones
+  nativas —torch, LightGBM, XGBoost, ONNX Runtime— debe verificarse con un `import` real antes
+  de darse por instalada, y ese `import` pertenece a la CI tanto como los tests.
+
+  Efecto colateral que conviene registrar: instalar el runtime **volvió utilizable LightGBM**,
+  de modo que la afirmación negativa del ROADMAP caducó. Se corrigió allí en vez de borrarse,
+  y la sustitución del ADR-0007 se mantiene porque reejecutarla movería un número dentro del
+  ruido.
+
+---
+
+### 005 — Verificación contaminada: tres consultas escritas después de leer los fragmentos
+
+- **Fecha:** 2026-08-30
+- **Fase:** 03-genai
+
+- **Síntoma:** al cerrar la construcción del índice vectorial se ejecutaron **tres consultas de
+  prueba** contra el corpus. Las tres devolvieron el fragmento correcto **en el primer puesto**,
+  con scores entre 0,8690 y 0,8811, y el resultado se reportó como verificación de que el
+  sistema recuperaba bien.
+
+  Un turno después, un set de **26 preguntas con respuesta** anotadas a mano midió sobre el
+  mismo índice y la misma estrategia: **hit@1 = 0,346**. Una de cada tres, no tres de tres.
+
+- **Causa raíz:** las tres consultas **se redactaron después de leer los fragmentos**, en la
+  misma sesión en que se había transcrito el corpus. Compartían vocabulario con su fragmento
+  objetivo porque el vocabulario del fragmento estaba a la vista al escribirlas.
+
+  El mecanismo, dicho sin rodeos: **quien escribe la consulta mirando el chunk mide su propia
+  memoria y no el sistema.** Un recuperador denso empareja superficies; una consulta construida
+  con las palabras del documento le entrega precisamente la superficie que necesita. El
+  experimento estaba resuelto antes de ejecutarse.
+
+  Lo que lo hace especialmente traicionero es que **el fallo es en la dirección optimista y no
+  produce ningún síntoma**. Un test frágil que falla de más molesta y se arregla. Aquí los tres
+  resultados eran correctos, los scores altos, las citas exactas, y todo el conjunto se leía
+  como una demostración de que el componente funcionaba.
+
+- **Diagnóstico:** no se detectó revisando las consultas —seguían pareciendo razonables— sino
+  al **construir un set con un procedimiento distinto** y ver la diferencia de magnitud. La
+  confirmación vino de medir el **solapamiento léxico** entre pregunta y fragmento anotado:
+  0,100 en el documento en inglés, 0,169 en la Ley 1266, 0,254 en la política interna y 0,276
+  en la Circular Básica. Las tres consultas originales estaban muy por encima de ese rango,
+  porque estaban hechas de las mismas palabras.
+
+- **Solución:** el set de `data/eval/retrieval_questions.yaml` sustituye a las tres consultas
+  como evidencia. Las cifras del turno anterior no se borran: quedan como lo que eran, una
+  demostración de funcionamiento y no una medición.
+
+- **Prevención:** cuatro reglas, y la última es la que convierte a las otras tres en algo
+  verificable en vez de una promesa.
+
+  1. **Enumerar las tareas del usuario antes que los contenidos del corpus.** La pregunta sale
+     de lo que un analista necesita hacer, no de lo que un documento dice.
+  2. **Redactar en el registro del usuario y no en el del documento.** "Puntaje" y no *score*;
+     "reporte negativo" y no *dato negativo*; "que le puede afectar la plata" y no *que pueda
+     afectar su capacidad de pago*.
+  3. **Anotar el fragmento correcto antes de ejecutar ninguna búsqueda.** Anotar después es
+     anotar lo que el sistema encuentra.
+  4. **Medir el solapamiento léxico entre pregunta y fragmento, y reportarlo.**
+     `scripts/evaluate_retrieval.py` lo calcula en cada corrida. Un set contaminado puntúa alto
+     ahí, y la regla 3 deja de depender de la palabra de quien anotó.
+
+- **Aprendizaje:** **una verificación diseñada por quien construyó el sistema, después de
+  construirlo, tiende a preguntar lo que el sistema sabe responder.** No hace falta mala fe:
+  basta con tener el material fresco en la cabeza.
+
+  Se conecta con la sección 6.1 de `docs/METHODOLOGY.md` —"una métrica que no puede fallar no
+  prueba nada"— por un lado que allí no estaba escrito. El documento advertía sobre métricas
+  cuyo **baseline** las hace triviales; esto es una métrica cuyo **conjunto de prueba** la hace
+  trivial. La defensa es la misma que para el resto del proyecto: **el procedimiento que
+  produce la evidencia se escribe y se mide, no se declara.**

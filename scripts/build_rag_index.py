@@ -123,7 +123,7 @@ def _report_length_distribution(chunks: Sequence[Chunk]) -> None:
     """Print the summary statistics and a histogram of finished chunk lengths."""
     summary = summarise_lengths(chunks)
     print()
-    print("Chunk length in characters (context header included)")
+    print("Encoded length in characters (integrity warnings + body; header NOT encoded)")
     print("-" * 78)
     print(
         f"  min {summary['min']:>6.0f} | p25 {summary['p25']:>6.0f} | "
@@ -131,7 +131,10 @@ def _report_length_distribution(chunks: Sequence[Chunk]) -> None:
         f"max {summary['max']:>6.0f} | mean {summary['mean']:>7.1f}"
     )
     print()
-    counts = _histogram([chunk.metadata.text_chars for chunk in chunks])
+    warned = sum(1 for chunk in chunks if chunk.has_integrity_notice)
+    print(f"  Chunks con aviso de integridad incrustado: {warned} de {len(chunks)}")
+    print()
+    counts = _histogram([chunk.metadata.embed_chars for chunk in chunks])
     widest = max(counts.values()) or 1
     edges = [*_HISTOGRAM_BUCKETS, None]
     for edge, count in zip(edges, counts.values(), strict=True):
@@ -156,7 +159,7 @@ def _histogram(values: Sequence[int]) -> dict[str, int]:
 
 def _report_model(model: EmbeddingModel, chunks: Sequence[Chunk]) -> None:
     """Print the model, its dimension, and how close the chunks come to its window."""
-    tokens = model.count_tokens([chunk.text for chunk in chunks])
+    tokens = model.count_tokens([chunk.embed_text for chunk in chunks])
     window = model.max_sequence_length
     over = [(chunk, count) for chunk, count in zip(chunks, tokens, strict=True) if count > window]
     print()

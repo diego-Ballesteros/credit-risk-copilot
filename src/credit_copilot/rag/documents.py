@@ -71,9 +71,21 @@ _OPTIONAL_KEYS: Final[frozenset[str]] = frozenset(
         "status_note",
         "scope_note",
         "synthetic_notice",
+        "integrity_notice",
     }
 )
-"""Front-matter keys a document may declare. Any other key is an error, not a comment."""
+"""Front-matter keys a document may declare. Any other key is an error, not a comment.
+
+**Why `integrity_notice` is a field of its own and not a use of `status_note`.** The two
+look alike and are read at opposite ends of the pipeline. A *status note* is context - "text
+in force, as amended by Law 2157 of 2021" - and it is displayed. An *integrity notice* is a
+warning that the fragment is not what it appears to be, and ADR-0008 requires it to travel
+inside the embedded text so it reaches a reader who never sees the metadata.
+
+Keying that distinction off the wording of `status_note` would mean grepping for "DEROGADO"
+and hoping. Typing it makes each document declare its own case, and a document that carries
+a warning nobody typed simply does not get one, loudly, instead of quietly.
+"""
 
 _MIN_HEADING_LEVEL: Final[int] = 2
 """Body headings start at `##`. Level 1 is reserved for the title, which lives in front matter."""
@@ -99,9 +111,12 @@ class DocumentMetadata:
         is_synthetic: Whether the document was written for this project rather than issued.
         retrieved_at: Date the text was taken from its source, as `YYYY-MM-DD`.
         source_url: Where the text was taken from. Required unless the document is synthetic.
-        status_note: Short statement of validity, embedded into every chunk of the document.
+        status_note: Short statement of validity. Displayed, never embedded.
         scope_note: What was transcribed and what was left out. Index metadata only.
-        synthetic_notice: The warning carried into every chunk. Required when synthetic.
+        synthetic_notice: Warning that the document was written for this project rather
+            than issued. Embedded in every chunk. Required when synthetic.
+        integrity_notice: Warning that the text is not what it appears to be - a derogated
+            chapter being the case this corpus has. Embedded in every chunk.
     """
 
     document_id: str
@@ -115,6 +130,28 @@ class DocumentMetadata:
     status_note: str | None = None
     scope_note: str | None = None
     synthetic_notice: str | None = None
+    integrity_notice: str | None = None
+
+    @property
+    def integrity_warnings(self) -> tuple[str, ...]:
+        """Warnings that must travel inside the embedded text of every chunk.
+
+        ADR-0008 takes the context header out of the vector and leaves these in. They are
+        not context: they change how the fragment must be read. A policy fragment that does
+        not declare itself synthetic gets quoted as real regulation, and a derogated chapter
+        that does not say so gets quoted as law in force. Those failures are worse than a
+        lower hit@k, so their cost in vector homogenisation is accepted deliberately.
+
+        Returns:
+            The synthetic warning and the integrity notice, in that order, omitting any
+            that the document does not declare.
+        """
+        warnings = []
+        if self.is_synthetic and self.synthetic_notice:
+            warnings.append(self.synthetic_notice)
+        if self.integrity_notice:
+            warnings.append(self.integrity_notice)
+        return tuple(warnings)
 
 
 @dataclass(frozen=True)

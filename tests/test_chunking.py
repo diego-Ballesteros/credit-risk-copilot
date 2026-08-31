@@ -32,6 +32,7 @@ from credit_copilot.rag.chunking import (
 from credit_copilot.rag.documents import CorpusFormatError, load_corpus, parse_document
 
 SYNTHETIC_DOCUMENT_ID = "politica-interna-credito"
+DEROGATED_DOCUMENT_ID = "circular-basica-contable-sfc-cap-ii"
 
 FRONT_MATTER = """---
 document_id: doc-de-prueba
@@ -146,37 +147,58 @@ def test_body_above_the_first_heading_is_refused(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Principle 2: every chunk carries its context header inside its own text
+# Principle 2, as ADR-0008 rewrote it: the header is stored and shown, never encoded;
+# the integrity warnings are encoded
 # ---------------------------------------------------------------------------
 
 
-def test_every_corpus_chunk_embeds_its_document_and_its_location(corpus_chunks):
+def test_the_context_header_never_reaches_the_encoded_text(corpus_chunks):
+    """The measured reason for the whole change: the header cost hit@k and bought nothing."""
     for chunk in corpus_chunks:
-        assert chunk.metadata.document_title in chunk.text, chunk.chunk_id
-        assert chunk.metadata.issuer in chunk.text, chunk.chunk_id
-        assert chunk.metadata.location in chunk.text, chunk.chunk_id
+        assert chunk.metadata.document_title not in chunk.embed_text, chunk.chunk_id
+        assert chunk.metadata.location not in chunk.embed_text, chunk.chunk_id
+        assert "Documento:" not in chunk.embed_text, chunk.chunk_id
+        assert "Ubicación:" not in chunk.embed_text, chunk.chunk_id
 
 
-def test_the_header_precedes_the_body_and_the_text_is_their_concatenation(corpus_chunks):
+def test_the_context_header_is_kept_in_the_metadata_and_in_the_shown_text(corpus_chunks):
+    """Taking it out of the vector must not lose it: a result still has to name its source."""
     for chunk in corpus_chunks:
-        assert chunk.text == f"{chunk.header}\n\n{chunk.body}", chunk.chunk_id
-        assert chunk.text.startswith("Documento: "), chunk.chunk_id
+        assert chunk.metadata.document_title in chunk.context_header, chunk.chunk_id
+        assert chunk.metadata.issuer in chunk.context_header, chunk.chunk_id
+        assert chunk.metadata.location in chunk.context_header, chunk.chunk_id
+        assert chunk.metadata.context_header == chunk.context_header, chunk.chunk_id
+        assert chunk.display_text == f"{chunk.context_header}\n\n{chunk.body}", chunk.chunk_id
+        assert chunk.display_text.startswith("Documento: "), chunk.chunk_id
 
 
-def test_a_status_note_is_embedded_so_a_derogated_text_says_so(corpus_chunks):
-    """The validity of a norm changes how its text must be read, so it travels with it."""
+def test_the_encoded_text_is_the_warnings_plus_the_body_and_nothing_else(corpus_chunks):
+    for chunk in corpus_chunks:
+        expected = (
+            f"{chunk.integrity_notice}\n\n{chunk.body}"
+            if chunk.integrity_notice
+            else chunk.body
+        )
+        assert chunk.embed_text == expected, chunk.chunk_id
+        assert chunk.body in chunk.embed_text, chunk.chunk_id
+
+
+def test_a_status_note_is_context_and_stays_out_of_the_vector(corpus_chunks):
+    """A note saying a law is in force is context; only warnings are encoded."""
     for chunk in corpus_chunks:
         note = chunk.metadata.status_note
         if note:
-            assert note in chunk.text, chunk.chunk_id
+            assert note in chunk.context_header, chunk.chunk_id
+            assert note not in chunk.embed_text, chunk.chunk_id
 
 
-def test_the_body_alone_carries_no_header(tmp_path):
+def test_the_body_alone_carries_neither_header_nor_warning(tmp_path):
     document = write_document(tmp_path, "\n## Título\n\n### Artículo 1\n\nTexto.\n")
     chunk = chunk_document(document)[0]
 
     assert chunk.body == "Texto."
     assert "Documento:" not in chunk.body
+    assert "AVISO:" not in chunk.body
 
 
 # ---------------------------------------------------------------------------
@@ -209,11 +231,31 @@ def test_every_subchunk_repeats_the_header_of_its_parent_unit(tmp_path):
     assert len(chunks) > 1
     for index, chunk in enumerate(chunks, start=1):
         assert chunk.metadata.location == "Título > Artículo largo"
-        assert "Título > Artículo largo" in chunk.text
-        assert chunk.metadata.document_title in chunk.text
-        assert f"Fragmento {index} de {len(chunks)}" in chunk.text
+        assert "Título > Artículo largo" in chunk.context_header
+        assert chunk.metadata.document_title in chunk.context_header
+        assert f"Fragmento {index} de {len(chunks)}" in chunk.context_header
         assert chunk.metadata.part_index == index
         assert chunk.metadata.part_count == len(chunks)
+
+
+def test_every_subchunk_of_a_warned_document_repeats_the_warning_in_its_vector(tmp_path):
+    """A part that lost the warning would be the orphan the warning exists to prevent."""
+    front_matter = FRONT_MATTER.replace(
+        "retrieved_at: 2026-08-30",
+        "retrieved_at: 2026-08-30\nintegrity_notice: Capítulo DEROGADO; no es norma vigente.",
+    )
+    paragraph = "Palabra " * 40
+    document = write_document(
+        tmp_path,
+        f"\n## Título\n\n### Artículo largo\n\n{paragraph}\n\n{paragraph}\n\n{paragraph}\n",
+        front_matter=front_matter,
+    )
+    chunks = chunk_document(document, max_body_chars=700)
+
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert "AVISO: Capítulo DEROGADO; no es norma vigente." in chunk.embed_text
+        assert chunk.embed_text.startswith("AVISO: ")
 
 
 def test_the_parts_of_a_subdivided_unit_share_its_unit_id_and_differ_in_chunk_id(tmp_path):
@@ -254,24 +296,28 @@ def test_parameters_that_would_break_subdivision_are_refused(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_the_citation_stored_in_the_index_is_derivable_from_the_embedded_text(corpus_chunks):
+def test_the_citation_stored_in_the_index_is_derivable_from_the_shown_text(corpus_chunks):
     """Two copies of a fact diverge unless something forbids it. This forbids it."""
     for chunk in corpus_chunks:
         citation = chunk.metadata.citation
         assert citation.endswith(chunk.metadata.location), chunk.chunk_id
-        assert chunk.metadata.location in chunk.text, chunk.chunk_id
+        assert chunk.metadata.location in chunk.display_text, chunk.chunk_id
 
 
-def test_the_synthetic_flag_in_the_index_agrees_with_the_warning_in_the_text(corpus_chunks):
+def test_the_synthetic_flag_in_the_index_agrees_with_the_warning_in_the_vector(corpus_chunks):
     for chunk in corpus_chunks:
-        warned = "Aviso:" in chunk.header
-        assert warned == chunk.metadata.is_synthetic, chunk.chunk_id
+        if chunk.metadata.is_synthetic:
+            assert chunk.metadata.synthetic_notice in chunk.embed_text, chunk.chunk_id
+        else:
+            notice = chunk.metadata.synthetic_notice
+            assert notice is None or notice not in chunk.embed_text, chunk.chunk_id
 
 
 def test_the_character_counts_stored_in_the_index_are_the_real_ones(corpus_chunks):
     for chunk in corpus_chunks:
         assert chunk.metadata.body_chars == len(chunk.body), chunk.chunk_id
-        assert chunk.metadata.text_chars == len(chunk.text), chunk.chunk_id
+        assert chunk.metadata.embed_chars == len(chunk.embed_text), chunk.chunk_id
+        assert chunk.metadata.display_chars == len(chunk.display_text), chunk.chunk_id
 
 
 def test_index_metadata_holds_only_scalars_and_drops_the_absent_fields(corpus_chunks):
@@ -295,7 +341,11 @@ def test_chunk_ids_are_unique_across_the_whole_corpus(corpus_chunks):
 
 
 def test_every_chunk_of_the_synthetic_policy_declares_itself_synthetic(corpus_chunks):
-    """A README nobody reads cannot warn anybody. The fragment has to carry the warning."""
+    """A README nobody reads cannot warn anybody, and neither can a metadata field.
+
+    ADR-0008 decision 3: this is the warning that survives the header's removal, and it has
+    to be inside the text a retriever encodes and returns, not beside it.
+    """
     policy_chunks = [
         chunk for chunk in corpus_chunks if chunk.metadata.document_id == SYNTHETIC_DOCUMENT_ID
     ]
@@ -303,8 +353,23 @@ def test_every_chunk_of_the_synthetic_policy_declares_itself_synthetic(corpus_ch
     assert policy_chunks, "the synthetic policy produced no chunk"
     for chunk in policy_chunks:
         assert chunk.metadata.is_synthetic, chunk.chunk_id
-        assert re.search(r"SINT[ÉE]TICO", chunk.text, flags=re.IGNORECASE), chunk.chunk_id
-        assert "no representa la política de ninguna entidad" in chunk.text.lower()
+        for text in (chunk.embed_text, chunk.display_text):
+            assert re.search(r"SINT[ÉE]TICO", text, flags=re.IGNORECASE), chunk.chunk_id
+            assert "no representa la política de ninguna entidad" in text.lower()
+
+
+def test_every_chunk_of_the_derogated_chapter_says_so_inside_its_vector(corpus_chunks):
+    """The other integrity warning: a derogated chapter quoted as law in force."""
+    chapter_chunks = [
+        chunk
+        for chunk in corpus_chunks
+        if chunk.metadata.document_id == DEROGATED_DOCUMENT_ID
+    ]
+
+    assert chapter_chunks, "the derogated chapter produced no chunk"
+    for chunk in chapter_chunks:
+        for text in (chunk.embed_text, chunk.display_text):
+            assert "DEROGADO" in text, chunk.chunk_id
 
 
 def test_no_chunk_of_a_real_document_claims_to_be_synthetic(corpus_chunks):
@@ -313,7 +378,21 @@ def test_no_chunk_of_a_real_document_claims_to_be_synthetic(corpus_chunks):
         if chunk.metadata.document_id == SYNTHETIC_DOCUMENT_ID:
             continue
         assert not chunk.metadata.is_synthetic, chunk.chunk_id
-        assert "Aviso:" not in chunk.header, chunk.chunk_id
+        assert "SINTÉTICO" not in chunk.embed_text, chunk.chunk_id
+
+
+def test_a_document_without_warnings_encodes_its_body_and_nothing_more(corpus_chunks):
+    """No warning must mean no overhead: the vector of a clean document is its text."""
+    clean = [
+        chunk
+        for chunk in corpus_chunks
+        if chunk.metadata.document_id not in {SYNTHETIC_DOCUMENT_ID, DEROGATED_DOCUMENT_ID}
+    ]
+
+    assert clean, "no document without warnings in the corpus"
+    for chunk in clean:
+        assert chunk.embed_text == chunk.body, chunk.chunk_id
+        assert not chunk.has_integrity_notice, chunk.chunk_id
 
 
 def test_a_synthetic_document_without_its_notice_is_refused(tmp_path):

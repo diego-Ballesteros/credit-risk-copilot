@@ -4,18 +4,22 @@ Run it with::
 
     uv run python scripts/evaluate_retrieval.py
 
-**What is being compared, and why these three.** The three strategies are not an arbitrary
-menu: they differ by one factor at a time, so each pair isolates one claim.
+**What is being compared, and why these four.** The strategies are not an arbitrary menu:
+they differ by one factor at a time, so each pair isolates one claim.
 
-    A  structural unit  +  context header embedded   <- the current strategy
-    B  structural unit  +  no header                 <- A minus B isolates the HEADER
-    C  fixed-length cut +  no header                 <- B minus C isolates the STRUCTURE
+    A  structural unit  +  full context header encoded   <- the strategy before ADR-0008
+    B  structural unit  +  nothing added                 <- A minus B isolates the HEADER
+    C  fixed-length cut +  nothing added                 <- B minus C isolates the STRUCTURE
+    D  structural unit  +  integrity warnings encoded    <- the strategy ADR-0008 adopted
 
-`chunking.py` argues that embedding the context header pays for itself and that a
-structural boundary beats a length boundary. Both are claims, neither had been measured,
-and A-versus-B is the one that matters most because the header is the more expensive of
-the two: it spends encoder budget on every chunk and, as the previous turn observed, it
-may be compressing the similarity scores.
+A, B and C are kept exactly as they were measured before the change. That is the point of
+keeping them: **D is only interpretable next to the arm it is meant to reproduce**, and a
+comparison rerun with the losing arms deleted cannot be checked by anybody.
+
+D sits between A and B by construction. It carries the part of the header that ADR-0008
+decision 3 refuses to remove - the notice that a document is synthetic, the notice that a
+chapter is derogated - and drops the rest. **B minus D is therefore the price of those
+warnings**, which is a number the project had committed to paying before knowing it.
 
 **Why the baseline is sized from a measurement instead of chosen.** Strategy A produces 89
 chunks with a mean body of 591 characters. A 700-character window with 15% overlap over the
@@ -52,7 +56,7 @@ import statistics
 import sys
 import tempfile
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -265,43 +269,56 @@ class Strategy:
     exact_ids_comparable: bool
 
 
+def _unit_passages(chunks: Sequence[Chunk], text_of: Callable[[Chunk], str]) -> tuple[Passage, ...]:
+    """Build one passage per structural chunk, taking its text from `text_of`."""
+    return tuple(
+        Passage(
+            passage_id=chunk.chunk_id,
+            text=text_of(chunk),
+            unit_ids=frozenset({chunk.metadata.unit_id}),
+            document_id=chunk.metadata.document_id,
+        )
+        for chunk in chunks
+    )
+
+
 def build_strategy_a(chunks: Sequence[Chunk]) -> Strategy:
-    """Structural units with the context header embedded: the current strategy."""
+    """Structural units with the whole context header encoded: the strategy before ADR-0008."""
     return Strategy(
         key="A",
-        name="Unidad estructural + header incrustado",
+        name="Unidad estructural + header completo incrustado",
         description=(
-            f"La estrategia actual. max_body_chars={DEFAULT_MAX_BODY_CHARS}, "
+            f"La estrategia anterior a la ADR-0008. max_body_chars={DEFAULT_MAX_BODY_CHARS}, "
             f"overlap_chars={DEFAULT_OVERLAP_CHARS}."
         ),
-        passages=tuple(
-            Passage(
-                passage_id=chunk.chunk_id,
-                text=chunk.text,
-                unit_ids=frozenset({chunk.metadata.unit_id}),
-                document_id=chunk.metadata.document_id,
-            )
-            for chunk in chunks
-        ),
+        passages=_unit_passages(chunks, lambda chunk: f"{chunk.context_header}\n\n{chunk.body}"),
         exact_ids_comparable=True,
     )
 
 
 def build_strategy_b(chunks: Sequence[Chunk]) -> Strategy:
-    """The same units, embedding only the body. Isolates what the header buys."""
+    """The same units, encoding only the body. Isolates what the header buys."""
     return Strategy(
         key="B",
-        name="Unidad estructural, sin header incrustado",
-        description="Los mismos cortes que A; se embebe solo el cuerpo del fragmento.",
-        passages=tuple(
-            Passage(
-                passage_id=chunk.chunk_id,
-                text=chunk.body,
-                unit_ids=frozenset({chunk.metadata.unit_id}),
-                document_id=chunk.metadata.document_id,
-            )
-            for chunk in chunks
+        name="Unidad estructural, sin nada añadido",
+        description="Los mismos cortes que A; se codifica solo el cuerpo del fragmento.",
+        passages=_unit_passages(chunks, lambda chunk: chunk.body),
+        exact_ids_comparable=True,
+    )
+
+
+def build_strategy_d(chunks: Sequence[Chunk]) -> Strategy:
+    """The adopted strategy: only the integrity warnings ride inside the vector."""
+    warned = sum(1 for chunk in chunks if chunk.has_integrity_notice)
+    return Strategy(
+        key="D",
+        name="Unidad estructural + solo avisos de integridad",
+        description=(
+            f"La estrategia adoptada en la ADR-0008. El header va a la metadata; se "
+            f"codifican los avisos de documento sintético y de capítulo derogado. "
+            f"{warned} de {len(chunks)} chunks llevan aviso."
         ),
+        passages=_unit_passages(chunks, lambda chunk: chunk.embed_text),
         exact_ids_comparable=True,
     )
 
@@ -928,17 +945,17 @@ def print_numeric_questions(
     print(_RULE)
     print("PREGUNTAS NUMÉRICAS — el caso que falló en el turno anterior")
     print(_RULE)
-    print(f"{'':<5} {'A':>5} {'B':>5} {'C':>5}   pregunta")
+    columns = "".join(f"{strategy.key:>5}" for strategy in strategies)
+    print(f"{'':<5}{columns}   pregunta")
     print("-" * 88)
     for question in numeric:
-        ranks = []
+        ranks = ""
         for strategy in strategies:
             outcome = next(
                 o for o in outcomes[strategy.key] if o.question_id == question.question_id
             )
-            ranks.append(str(outcome.unit_rank) if outcome.unit_rank else "—")
-        print(f"{question.question_id:<5} {ranks[0]:>5} {ranks[1]:>5} {ranks[2]:>5}   "
-              f"{question.question[:58]}")
+            ranks += f"{outcome.unit_rank if outcome.unit_rank else '—':>5}"
+        print(f"{question.question_id:<5}{ranks}   {question.question[:55]}")
     print()
     print("  Rango del primer acierto en el top-10; '—' significa que no apareció.")
 
@@ -1023,7 +1040,12 @@ def main() -> int:
         print(f"\nNo se pudo cargar el modelo de embeddings: {error}", file=sys.stderr)
         return 1
 
-    strategies = (build_strategy_a(chunks), build_strategy_b(chunks), build_strategy_c(documents))
+    strategies = (
+        build_strategy_a(chunks),
+        build_strategy_b(chunks),
+        build_strategy_c(documents),
+        build_strategy_d(chunks),
+    )
     print()
     for strategy in strategies:
         print(f"  {strategy.key}: {strategy.name} — {len(strategy.passages)} pasajes")
