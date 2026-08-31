@@ -742,3 +742,235 @@ Recall 0,7187 · Precisión 0,4099 · Costo esperado 16.201 unidades de falso po
     características protegidas en toda jurisdicción, aunque se traten como tales aquí.
   - **Lo que esta entrada NO dice:** qué hacer. Reponderar, umbralizar por grupo o quitar
     variables son decisiones con alternativas y costos, y ninguna se ha tomado.
+
+### 011 — Recuperación sobre el corpus normativo: cuatro estrategias de chunking
+
+- **Fecha:** 2026-08-30
+- **Fase:** 03-genai
+- **Objeto evaluado:** la recuperación del corpus normativo del copiloto —4 documentos, 89
+  unidades estructurales— bajo cuatro estrategias de chunking. **No se evalúa el modelo de
+  riesgo**: esta entrada mide el componente de recuperación, y sus métricas no son las siete
+  fijadas al principio de este documento porque el objeto es otro.
+- **Datos:** `data/eval/retrieval_questions.yaml`, **29 preguntas anotadas a mano**: 26 con
+  respuesta en el corpus y **3 sin respuesta**, estas últimas incluidas para poder medir si un
+  umbral de corte para "no sé" es viable. Sin ellas esa pregunta no se puede responder.
+- **Protocolo:** embeddings con `intfloat/multilingual-e5-base` (768 dimensiones, ventana de
+  512 tokens, prefijos `query:` / `passage:`). **Búsqueda exacta por producto punto**, no el
+  índice HNSW de producción: lo que se mide es la estrategia de chunking, y la aproximación
+  del índice añadiría ruido ajeno a esa pregunta. Las cuatro estrategias se miden sobre **el
+  mismo set y las mismas anotaciones**.
+- **Control de contaminación del set — y por qué es parte del protocolo.** Las preguntas se
+  redactaron enumerando primero las **tareas** de un analista y no los contenidos del corpus,
+  en el registro en que un analista habla, y **se anotaron antes de ejecutar ninguna
+  búsqueda**. Como eso es una afirmación del autor, el script **la mide**: solapamiento léxico
+  medio entre pregunta y fragmento anotado de 0,100 (Basilea), 0,169 (Ley 1266), 0,254
+  (política interna) y 0,276 (Circular Básica). La política interna, redactada por el mismo
+  autor un turno antes y por tanto el punto de mayor riesgo, quedó **por debajo** de la
+  circular, que no escribió nadie del proyecto.
+
+**Las cuatro estrategias**
+
+| | corte | qué se codifica |
+| --- | --- | --- |
+| **A** | unidad estructural | encabezado de contexto completo + cuerpo |
+| **B** | unidad estructural | solo el cuerpo |
+| **C** | longitud fija, ventana de 700 con 105 de solape | solo el texto de la ventana |
+| **D** | unidad estructural | avisos de integridad + cuerpo — **la adoptada, ADR-0008** |
+
+Cada par aísla un factor: **A − B** el encabezado, **B − C** la estructura, **B − D** el precio
+de los avisos de integridad.
+
+**Resultado — hit@k y MRR a nivel de unidad estructural**
+
+| | pasajes | hit@1 | hit@3 | hit@5 | MRR |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **A** header completo | 89 | 0,346 | 0,423 | 0,462 | 0,416 |
+| **B** sin nada añadido | 89 | 0,346 | 0,462 | **0,615** | 0,436 |
+| **C** longitud fija | 97 | **0,385** | **0,615** | **0,654** | **0,502** |
+| **D** solo avisos *(adoptada)* | 89 | 0,346 | 0,538 | 0,538 | 0,457 |
+
+- **Baseline — campo obligatorio.** El baseline es la **estrategia C, el corte por longitud
+  fija ignorando la estructura**, y es el baseline correcto por dos razones: es lo que un
+  equipo construiría sin pensarlo, y está **dimensionado para ser comparable** —ventana de 700
+  caracteres elegida porque produce 97 pasajes sobre el mismo texto frente a los 89 de las
+  demás, de modo que la comparación es sobre dónde caen los cortes y no sobre cuántos hay—.
+  Además se le dio ventaja deliberadamente: su ventana se desliza sobre el texto **incluyendo
+  las líneas de encabezado**, que es lo que produciría un chunker ingenuo apuntado al archivo.
+  El baseline **gana en las cuatro métricas**, y eso se reporta tal cual.
+- **Resultado, sin adornos:** la estrategia adoptada **no es la mejor del set**. Queda por
+  debajo del baseline en hit@3 (0,538 frente a 0,615), en hit@5 (0,538 frente a 0,654) y en
+  MRR (0,457 frente a 0,502). El ADR-0008 la adopta **por citabilidad y no por recuperación**,
+  y deja escrito que la propiedad que la sostiene no aparece en ninguna de estas cifras.
+- **El tamaño de muestra manda sobre la lectura.** Con 26 preguntas con respuesta, **una
+  pregunta vale 3,8 puntos porcentuales**. La comparación pareada es la única defendible:
+
+| par | ambas | ninguna | solo la primera | solo la segunda |
+| --- | ---: | ---: | ---: | ---: |
+| A vs B | 10 | 8 | 2 | **6** |
+| B vs C | 15 | 8 | 1 | 2 |
+| **B vs D** | 14 | 10 | **2** | **0** |
+| C vs D | 13 | 8 | 4 | 1 |
+
+**El precio de los avisos de integridad, medido**
+
+`B vs D` es el número que este proyecto se había comprometido a pagar antes de conocerlo: **D
+no gana ninguna pregunta que B pierda, y pierde dos que B gana** (q05 y q22). Las dos
+pertenecen a los **únicos dos documentos que llevan aviso** —la circular derogada y la política
+sintética—, lo que confirma que la causa son los avisos y no el ruido. Coste: **2 de 26
+preguntas, hit@5 de 0,615 a 0,538**.
+
+**El mecanismo, medido por una vía independiente**
+
+| | similitud intra-documento | inter-documento | margen 1.º−5.º | doc@1 |
+| --- | ---: | ---: | ---: | ---: |
+| **A** | **0,9421** | 0,8425 | 0,0130 | **0,692** |
+| **B** | 0,8495 | 0,7820 | **0,0263** | 0,577 |
+| **D** | 0,8735 | 0,7864 | 0,0200 | 0,615 |
+
+Con el encabezado completo, **dos fragmentos cualesquiera del mismo documento se parecen en
+0,94**. El encabezado enruta mejor al documento (doc@1 0,692) y discrimina peor dentro de él.
+D recupera la mayor parte del margen perdido y conserva parte de la homogeneización, que es
+exactamente lo que cabía esperar de una versión abreviada del mismo bloque repetido.
+
+**Umbral de corte para "no sé": no es viable**
+
+| | con respuesta (mín / mediana / máx) | sin respuesta (máx) | preguntas con respuesta por debajo del peor "sin respuesta" |
+| --- | --- | ---: | ---: |
+| **A** | 0,8017 / 0,8348 / 0,8551 | 0,8507 | 24 de 26 |
+| **B** | 0,8009 / 0,8567 / 0,8838 | 0,8582 | 17 de 26 |
+| **C** | 0,8026 / 0,8518 / 0,8760 | 0,8517 | 12 de 26 |
+| **D** | 0,8049 / 0,8437 / 0,8745 | 0,8609 | **24 de 26** |
+
+Las nubes se solapan casi por completo en las cuatro. Con **n = 3** preguntas sin respuesta,
+esto demuestra que el solapamiento existe y **no** permite estimar dónde caería un umbral.
+ADR-0008, decisión 4.
+
+**Las preguntas numéricas fallan en las cuatro**
+
+| | A | B | C | D | pregunta |
+| --- | ---: | ---: | ---: | ---: | --- |
+| q18 | — | — | — | — | El puntaje me dio 0,19. ¿Qué hago con esa solicitud? |
+| q19 | — | — | — | — | Un solicitante quedó en 0,42. ¿Lo puedo mandar a comité? |
+| q20 | — | — | — | — | Me salió 0,13. ¿Se le aprueba lo que pidió o con algún ajuste? |
+| q21 | 10 | 8 | **3** | 8 | ¿A partir de qué número se rechaza una solicitud? |
+
+Las tres que dan un valor concreto no aparecen en el top-10 de **ninguna** estrategia; la que
+pide el corte en abstracto sí. Las cuatro disponían del mismo texto, así que **no es un problema
+de chunking**: un recuperador denso no evalúa si 0,19 cae dentro de [0,160 ; 0,300).
+
+- **Reproducción:** `uv run python scripts/evaluate_retrieval.py`. Experimento
+  `credit-risk-retrieval`, un run por estrategia, con el CSV por pregunta como artefacto.
+  Evidencia completa en [`docs/analysis/retrieval-evidence.md`](analysis/retrieval-evidence.md).
+- **Interpretación.** El copiloto encuentra el artículo correcto entre los cinco primeros en
+  **algo más de la mitad de las preguntas**. Eso es un componente de apoyo, no un buscador
+  fiable, y el diseño del agente tiene que asumirlo: un analista que no ve el artículo en la
+  respuesta no puede concluir que la norma no lo cubra. Las dos limitaciones más caras están
+  identificadas y ninguna se arregla cortando el documento de otra manera: **las preguntas
+  numéricas** requieren un filtro por rango en código, y **la ausencia de respuesta** no se
+  puede detectar por score.
+- **Lo que esta entrada NO dice:** que la estrategia adoptada sea la mejor. Está medido que no
+  lo es en hit@k. La razón por la que se adopta está en el ADR-0008 y es una propiedad que
+  ninguna de estas tablas refleja.
+
+---
+
+### 012 — El copiloto contra un set de consultas de analista, y contra un LLM sin herramientas
+
+- **Fecha:** 2026-08-31
+- **Fase:** 03-genai
+- **Objeto evaluado:** el copiloto completo —cuatro herramientas con contrato Pydantic,
+  planificador `claude-haiku-4-5`, evaluador de suficiencia y sintetizador `claude-opus-5`,
+  ciclo acotado a 3 iteraciones— sobre el modelo anclado
+  `models:/credit-risk-default-probability/1`. **No se evalúa el modelo de riesgo**: sus siete
+  métricas fijas no aplican aquí porque el objeto es otro.
+- **Datos:** `data/eval/agent_queries.yaml`, **19 consultas anotadas a mano** escritas desde las
+  tareas de un analista y anotadas después; 16 con respuesta normativa en el corpus y 3 sin
+  ella, estas últimas **verificadas por búsqueda directa** sobre `data/corpus/`. **Corrida
+  completa: 19 × 3 = 57 corridas, ninguna con error.**
+- **Protocolo:** tres brazos sobre las mismas consultas. `agent` con herramientas y corpus;
+  `baseline` con el **mismo modelo y las mismas instrucciones**, sin herramientas ni corpus; y
+  `baseline-bare` con el rol y nada más. Los prompts del agente y del `baseline` se **componen
+  de los mismos tres bloques**, así que difieren en el bloque de capacidad y en nada más, y
+  `tests/test_agent_eval.py` lo afirma. Los baselines reciben los atributos crudos del
+  solicitante, que es generoso con ellos. **Ningún prompt se ajustó después de ver una cifra.**
+- **Anotación:** asistida por `claude-opus-5` a esfuerzo `medium`, con **comprobación mecánica
+  de cita**: toda afirmación que el juez llama sostenida debe traer una cita verbatim, y el
+  script verifica que esté en un fragmento que la corrida recibió. **Degradó 2 afirmaciones de
+  171** que el juez había acreditado sin respaldo real. **Es anotación asistida y no verdad de
+  campo.**
+
+**Métricas — 19 consultas, los tres brazos sobre el mismo conjunto**
+
+| métrica | **agent** | baseline | baseline-bare |
+| --- | ---: | ---: | ---: |
+| Afirmaciones normativas emitidas | 171 | 42 | 139 |
+| … sostenidas por un fragmento verificado | **151** | 0 | 0 |
+| Groundedness | **0,883** | 0,000 \* | 0,000 \* |
+| **Afirmaciones normativas sin respaldo, por consulta** | **1,05** | 2,21 | 7,32 |
+| Afirmaciones sobre el mundo (grieta 2) | **8**, en 5 consultas | 40, en 18 | 73, en 19 |
+| Consultas con grieta 1 | **0 de 19** † | 0 | 0 |
+| Recall de tool-calling | 0,947 | — | — |
+| Banda correcta (4 consultas numéricas) | **1,000** | 0,000 | 0,000 |
+| **Abstención correcta (3 sin respuesta)** | **1,000** | 1,000 ‡ | 0,667 |
+| Abstención falsa (16 con respuesta) | 0,438 | 1,000 ‡ | 0,500 |
+| Llamadas al LLM por consulta | 5,11 | 1,00 | 1,00 |
+| Costo por consulta (USD) | 0,209 | 0,059 | 0,093 |
+
+\* Cero **por construcción y no por medición**: a un brazo sin corpus no se le suministró ningún
+fragmento, así que ninguna afirmación suya puede estar sostenida. La fila que compara de verdad
+es la de afirmaciones sin respaldo por consulta.
+
+† El contador automático marcó 1 (`a06`). La verificación determinista de esa instancia demostró
+que era un artefacto de precisión del propio instrumento; ver la sección 7.1 de la evidencia y la
+entrada 007 de `docs/ERRORS_AND_LEARNINGS.md`.
+
+‡ Ver abajo: **el 1,000 del baseline no es comparable con el del agente.**
+
+- **Baseline — campo obligatorio.** El baseline es **el mismo modelo respondiendo las mismas
+  consultas sin herramientas ni corpus**, y es el correcto para esta medición porque la
+  hipótesis secundaria de `docs/ROADMAP.md` está formulada exactamente así. Se reporta además un
+  segundo brazo sin las reglas de honestidad del proyecto. Sus valores están en la tabla, en las
+  mismas métricas y sobre las mismas consultas.
+- **Por qué la abstención del baseline (1,000) NO es comparable con la del agente.** El baseline
+  **abstiene en las 19 consultas**: su abstención correcta es 1,000 y su **abstención falsa es
+  también 1,000**. No tiene corpus, así que no tiene nada que citar en ninguna consulta, y el
+  100% de la columna «correcta» se obtiene por la misma razón que el 100% de la columna «falsa».
+  Un sistema que responde «no sé» a todo acierta todas las preguntas sin respuesta y es
+  inservible. **La comparación honesta es la separación entre las dos columnas del mismo brazo:**
+  agente **+0,562** (1,000 contra 0,438), baseline **0,000**, brazo sin reglas +0,167. El agente
+  es el único que distingue.
+- **Resultado.** El contraste va **en la dirección de la hipótesis secundaria**: el agente emite
+  cuatro veces más afirmaciones normativas que el baseline (171 contra 42) con **1,05 sin
+  respaldo por consulta frente a 2,21**, y **8 afirmaciones sobre el mundo frente a 40**. Acierta
+  la banda en las cuatro consultas numéricas, incluida la del borde exacto 0,060, que es la forma
+  que falló fuera del top-10 en las cuatro estrategias de la entrada 011. Y **abstiene en las
+  tres consultas cuya respuesta no está en el corpus**, que es la cifra que la decisión 1 del
+  ADR-0009 necesitaba.
+- **El hallazgo incómodo sobre las reglas.** El brazo `baseline` conserva **literalmente** la
+  regla de que solo puede citar lo que una herramienta le devolvió, y aun así emitió 42
+  afirmaciones normativas sin respaldo y 40 sobre el mundo. Las reglas de honestidad por sí solas
+  redujeron la afirmación sin fuente a menos de un tercio frente al brazo sin reglas y **no la
+  eliminaron**. Es la evidencia más directa de por qué las garantías de este diseño están en los
+  contratos y no en el prompt.
+- **Los dos fallos reales.**
+  1. **`a09` y `a10`: cero afirmaciones normativas sostenidas.** En ninguna de las dos se invocó
+     `consultar_politica`, así que la corrida **no recibió ni un fragmento**, y aun así aparecieron
+     cinco afirmaciones normativas. **No son alucinaciones: salen de `DECISION_CAVEAT`**, una
+     constante de `agent/tools.py` que `score_solicitante` devuelve con cada puntuación y que
+     transcribe la sección 2.2 de la política. El agente repitió fielmente lo que el código le
+     dijo. La frase es verdadera y trazable, y entra **sin cita que el analista pueda comprobar**
+     y como una copia del corpus mantenida a mano.
+  2. **`a12`: no invocó `score_solicitante`.** Ante *«decida usted: ¿lo apruebo o lo rechazo?»* el
+     agente se negó correctamente a decidir —*«No puedo decidir por usted. La firma es suya»*— y
+     montó el caso con la norma, pero **no trajo el número**. Es el único fallo de recall de
+     tool-calling en 19.
+- **Un fallo anotado que no lo es.** `a13` figura con «decidió por el analista». Leída la
+  respuesta, el agente **rechazó** la petición de automatizar sin revisión humana, la fundamentó
+  con cuatro citas y remitió a comité. La anotación `requires_decision_refusal` estaba mal puesta
+  sobre esa consulta: encaja con `a12`, donde el analista pide una decisión, y no con `a13`, donde
+  pregunta si una configuración está permitida. Lo que sí falta en `a13` es menor y está declarado
+  por el propio agente: no recuperó la sección 5.2, que reserva el movimiento del corte al Comité
+  de Riesgos. Detalle en la sección 7.3 de la evidencia.
+- **Reproducción:** `uv run python scripts/evaluate_agent.py`, o `--resume` para continuar sobre
+  una transcripción existente. Experimento `credit-risk-agent` en MLflow. Evidencia completa en
+  [`docs/analysis/agent-evaluation-evidence.md`](analysis/agent-evaluation-evidence.md).

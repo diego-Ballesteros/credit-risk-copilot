@@ -5,8 +5,11 @@ description = "Credit risk scoring (probability of default) with an agentic copi
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
+    "anthropic>=1.2.0",
+    "chromadb>=1.5.9",
     "imbalanced-learn>=0.14.2",
     "joblib>=1.4",
+    "langgraph>=1.2.11",
     "lightgbm>=4.7.0",
     "mlflow>=3.15.2",
     "optuna>=4.9.0",
@@ -15,6 +18,7 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "scikit-learn>=1.5",
+    "sentence-transformers>=6.0.0",
     "shap>=0.51.0",
     "ucimlrepo>=0.0.7",
 ]

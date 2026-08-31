@@ -445,3 +445,147 @@ un target permutado, el desempeño colapsa al azar —ROC-AUC 0,4882 contra una 
 ±0,020 alrededor de 0,5, y PR-AUC 0,2150 contra ±0,015 alrededor de la prevalencia—. Las
 tolerancias se derivaron midiendo la distribución nula sobre ocho permutaciones, no de una
 intuición.
+
+---
+
+## 11 · El corpus normativo del copiloto, y qué tan bien se recupera
+
+El modelo de esta ficha es **una herramienta de un copiloto**, y ese copiloto contrasta el
+score contra un corpus normativo. Lo que ese corpus contiene, y con qué fiabilidad se
+recupera, condiciona lo que el sistema completo puede afirmar. Va aquí porque una limitación
+del corpus se convierte en una limitación de la recomendación que ve el analista.
+
+### 11.1 · Qué documentos lo componen
+
+| Documento | Emisor | Idioma | Estado |
+| --- | --- | --- | --- |
+| Circular Básica Contable y Financiera (CE 100 de 1995), Capítulo II | Superintendencia Financiera de Colombia | es | **DEROGADO desde 2023-06-01** |
+| Ley 1266 de 2008, Hábeas Data financiero (arts. 4, 6, 13 y 15) | Congreso de la República | es | Vigente, con las modificaciones de la Ley 2157 de 2021 |
+| *Principles for the Management of Credit Risk* (BCBS 75), principios 4, 6, 10 y 11 | Comité de Supervisión Bancaria de Basilea | **en** | Vigente |
+| Política Interna de Otorgamiento de Crédito de Consumo Rotativo | — | es | **SINTÉTICO** |
+
+Los cuatro son **extractos parciales**. Cada archivo declara en su propia cabecera qué se
+transcribió y qué se omitió.
+
+### 11.2 · Dos avisos que viajan dentro de cada fragmento
+
+**Uno de los cuatro documentos es sintético.** La política interna se redactó para este
+proyecto, **no representa la política de ninguna entidad financiera real**, no fue aprobada
+por ningún órgano de gobierno y no debe usarse como referencia para una decisión de crédito
+real. Sus umbrales están anclados en las cifras de esta ficha —probabilidad en [0, 1], umbral
+operativo 0,160, supuesto de costos 5:1— precisamente para que el copiloto tenga contra qué
+contrastar un score.
+
+**El Capítulo II de la Circular Básica está derogado** desde el **1 de junio de 2023** por la
+Circular Externa 018 de 2021, que lo reemplazó por los Capítulos XXXI (SIAR) y XXXII (SARE).
+Se conserva por su valor de referencia sobre criterios de otorgamiento y de calificación, y
+**no describe la norma vigente**.
+
+Ninguno de los dos avisos vive solo en un README. Por decisión del **ADR-0008** ambos van
+**incrustados en el texto que se indexa**, de modo que cualquier fragmento recuperado los
+lleva consigo: un fragmento de la política que no dijera ser sintético se citaría como
+normativa real, y un capítulo derogado que no lo dijera se citaría como norma vigente. Esa
+decisión tiene un costo medido de recuperación y se aceptó a sabiendas.
+
+### 11.3 · Rendimiento medido de la recuperación
+
+Sobre un set de **29 preguntas anotadas a mano** —26 con respuesta en el corpus, 3 sin
+respuesta— escritas desde la tarea de un analista y anotadas antes de ejecutar ninguna
+búsqueda. Entrada 011 de `docs/EVALUATION.md` y evidencia completa en
+[`docs/analysis/retrieval-evidence.md`](analysis/retrieval-evidence.md).
+
+| Métrica | Estrategia adoptada | Baseline: corte por longitud fija |
+| --- | ---: | ---: |
+| hit@1 (unidad estructural) | 0,346 | 0,385 |
+| hit@3 | 0,538 | 0,615 |
+| hit@5 | 0,538 | 0,654 |
+| MRR | 0,457 | 0,502 |
+
+**El copiloto encuentra el artículo correcto entre los cinco primeros en algo más de la mitad
+de las preguntas.** Es un componente de apoyo, no un buscador fiable. La estrategia adoptada
+**no es la mejor del set**: el ADR-0008 la elige por citabilidad —un chunk que coincide con un
+artículo se puede citar; una ventana de 700 caracteres no— y deja registrado que esa propiedad
+no aparece en ninguna de estas cifras.
+
+### 11.4 · Tres límites del copiloto que se derivan de esto
+
+- **Una consulta que da un valor de probabilidad y pide la decisión no recupera la tabla de
+  bandas.** Medido: las tres preguntas de esa forma fallan en las cuatro estrategias
+  comparadas, fuera del top-10. Un recuperador denso empareja superficies y no evalúa si 0,19
+  cae dentro de un rango. Se resuelve con un filtro por rango en código, no con recuperación.
+- **El sistema no puede declarar por score que no sabe.** Sobre las tres preguntas sin
+  respuesta en el corpus, el mejor resultado puntúa por encima de 24 de las 26 preguntas que
+  sí la tienen. **Que el copiloto no muestre un artículo no significa que la norma no lo
+  cubra.**
+- **La recuperación entre idiomas es la menos fiable.** De las cuatro preguntas en español
+  cuya respuesta está en el documento en inglés, dos fallan en todas las estrategias.
+
+### 11.4 bis · Rendimiento medido del copiloto completo
+
+Entrada 012 de `docs/EVALUATION.md`, evidencia en
+[`docs/analysis/agent-evaluation-evidence.md`](analysis/agent-evaluation-evidence.md). **19
+consultas de analista anotadas a mano** —16 con respuesta en el corpus y 3 sin ella— contra tres
+brazos: el copiloto completo, el mismo modelo sin herramientas ni corpus con **las mismas
+instrucciones**, y el mismo modelo con el rol y nada más.
+
+| | copiloto | sin herramientas | sin herramientas ni reglas |
+| --- | ---: | ---: | ---: |
+| Afirmaciones normativas emitidas | 171 | 42 | 139 |
+| … sostenidas por un fragmento verificado | **151** | 0 | 0 |
+| **Sin respaldo, por consulta** | **1,05** | 2,21 | 7,32 |
+| Afirmaciones sobre el mundo, sin fragmento | **8** en 5 consultas | 40 en 18 | 73 en 19 |
+| Banda correcta en consultas numéricas | **4 de 4** | 0 | 0 |
+| Herramientas correctas | 18 de 19 | — | — |
+| Costo por consulta | 0,209 USD | 0,059 | 0,093 |
+
+**El copiloto no gana callándose:** emite cuatro veces más afirmaciones normativas que el modelo
+sin herramientas y sostiene 151 de 171 con una cita comprobada literalmente contra el fragmento.
+
+**Sabe decir que no sabe, y esa es la cifra que más importa.** Abstuvo en **las tres consultas
+cuya respuesta no está en el corpus** y respondió en nueve de las dieciséis que sí la tienen. El
+brazo sin herramientas también abstiene en las tres — **porque abstiene en las diecinueve**, lo
+que no es capacidad de abstención sino incapacidad de responder. La medida es la separación entre
+abstener cuando debe y abstener cuando no debe: **+0,562 en el copiloto contra 0,000**.
+
+**La anotación es asistida por un modelo**, con una comprobación mecánica que exige una cita
+verbatim del fragmento y que degradó 2 afirmaciones de 171 que el anotador había acreditado. No
+es verdad de campo, y el tamaño —19 consultas, una corrida por consulta sobre un sistema
+estocástico— no permite estimar tasas con precisión.
+
+### 11.4 ter · Dos fallos medidos del copiloto
+
+**1 · El copiloto puede emitir una afirmación normativa que ninguna cita respalda, y la fuente es
+el propio código.** En las dos consultas de simulación el planificador no invocó la herramienta
+de política, la corrida **no recibió ningún fragmento**, y aun así la respuesta afirmó que
+«ninguna banda autoriza un rechazo automático» y que «un rechazo lo revisa y lo firma un
+analista». **No son invenciones**: son una constante de `agent/tools.py` que la herramienta de
+puntuación devuelve con cada score y que transcribe a mano la sección 2.2 de la política interna.
+La frase es verdadera y trazable, y **llega al analista sin ninguna cita que pueda comprobar**.
+Es además una copia del corpus mantenida a mano, que puede divergir de él en silencio.
+
+**2 · En una de las 19 consultas el copiloto no puntuó al solicitante cuando debía.** Ante
+*«decida usted: ¿lo apruebo o lo rechazo?»* se negó correctamente a decidir y montó el caso con
+la norma, pero **no trajo la probabilidad**. El analista pedía una decisión y se quedó sin el
+insumo cuantitativo.
+
+### 11.5 · Para qué NO debe usarse el copiloto
+
+- **No debe usarse como si la ausencia de una cita fuera prueba de que la norma no dice
+  nada.** Está medido que el recuperador falla en cerca de la mitad de las consultas.
+- **No debe citarse un fragmento de la política interna como normativa.** Es sintético y lo
+  declara en su propio texto; ignorar ese aviso es fabricar una fuente.
+- **No debe citarse el Capítulo II como norma vigente.** Está derogado desde junio de 2023.
+- **No debe usarse como compuerta de decisión, ni configurarse para aprobar sin revisión
+  humana.** El copiloto **no decide**: aporta evidencia trazable para que decida una persona.
+  Ante la petición explícita de automatizar la aprobación de todo lo que quede por debajo de una
+  probabilidad dada, el sistema la rechazó y remitió a comité — pero **esa negativa es una
+  conducta observada del modelo de lenguaje, no una garantía del código**, y nada en la
+  arquitectura impide que un integrador conecte la salida de la herramienta de puntuación a una
+  aprobación automática. La sección 2.2 de la política interna reserva la aprobación automática
+  a la banda de menor riesgo y con muestreo, y la sección 8 de esta ficha ya establece que el
+  modelo no debe usarse como decisión automática sin revisión humana. **El copiloto no cambia
+  eso: lo hereda.**
+- **No debe tratarse una afirmación normativa del copiloto como citada por el hecho de que el
+  copiloto cite en otras partes de la misma respuesta.** Está medido que puede emitir texto
+  normativo procedente de constantes del propio código, sin fragmento detrás. Lo citable es lo
+  que aparece en la lista de citas de la respuesta, no lo que suena normativo.

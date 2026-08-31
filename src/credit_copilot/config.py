@@ -107,6 +107,31 @@ class Settings(BaseSettings):
         return self.data_dir / "corpus"
 
     @property
+    def eval_dir(self) -> Path:
+        """Directory for hand-annotated evaluation sets.
+
+        Versioned in git like `data/corpus/`, and for the same reason: the annotations
+        were made by hand, and without them no retrieval measurement is reproducible.
+
+        Returns:
+            Absolute path to `data/eval/`.
+        """
+        return self.data_dir / "eval"
+
+    @property
+    def vector_store_dir(self) -> Path:
+        """Directory for the persistent ChromaDB index built from `data/corpus/`.
+
+        Derived data, not a source: it is gitignored and rebuilt by
+        `scripts/build_rag_index.py`. The corpus that produces it is versioned instead,
+        because without the corpus the index is not reproducible.
+
+        Returns:
+            Absolute path to `data/vector_store/`.
+        """
+        return self.data_dir / "vector_store"
+
+    @property
     def docs_dir(self) -> Path:
         """Project documentation directory.
 

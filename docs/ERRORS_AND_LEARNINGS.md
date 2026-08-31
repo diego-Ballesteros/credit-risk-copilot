@@ -216,3 +216,305 @@ entrada corregida se corrige con una entrada nueva que referencia a la anterior.
   vacía** que se parece a una verificación. Los tres fallos comparten que **el verde no
   significaba lo que parecía significar**, y los tres se detectaron preguntando
   explícitamente qué estaba comprobando el verde.
+
+---
+
+### 004 — El paquete instala sin error y falla al importar: la DLL está, el runtime no
+
+- **Fecha:** 2026-08-30
+- **Fase:** 03-genai *(la primera ocurrencia fue en 02-modeling, 2026-08-26)*
+
+- **Síntoma:** `uv add sentence-transformers` termina en verde. El primer `import` revienta:
+
+      OSError: [WinError 126] No se puede encontrar el módulo especificado.
+      Error loading "...\.venv\Lib\site-packages\torch\lib\c10.dll" or one of its dependencies.
+
+  El mensaje señala un archivo **que existe**. `c10.dll` está donde dice, con el tamaño que le
+  corresponde, y aun así "no se puede encontrar el módulo".
+
+- **Causa raíz:** el wheel trae la biblioteca dinámica pero **no el runtime del que ella
+  depende**. `c10.dll` está compilada contra el runtime de Microsoft Visual C++ y lo enlaza
+  dinámicamente, así que cargarla exige `vcruntime140.dll`, `vcruntime140_1.dll`,
+  `msvcp140.dll` y `msvcp140_1.dll` en el sistema. Este equipo tenía **únicamente las
+  variantes `*_clr0400`** —`msvcp140_clr0400.dll`, `vcruntime140_clr0400.dll`—, que son las
+  que empaqueta .NET y **no sirven** como el runtime de C++ que busca el cargador.
+
+  El mensaje de Windows dice "no se puede encontrar el módulo" refiriéndose a **una
+  dependencia** de la DLL nombrada, no a la DLL nombrada. Esa ambigüedad es la mitad del
+  problema: manda a verificar el archivo que sí está.
+
+  Y la razón de que el gestor de paquetes reporte éxito es que **instalar y cargar son
+  operaciones distintas**. `uv` descarga, verifica el hash y coloca los archivos; nunca ejecuta
+  el cargador dinámico del sistema operativo. Un paquete puede quedar perfectamente instalado
+  y ser imposible de importar, y ninguna herramienta de empaquetado está en posición de
+  advertirlo.
+
+- **Diagnóstico:** no se dedujo del mensaje sino **comprobando qué había en `System32`**, que
+  es la afirmación negativa que el mensaje sugería y no demostraba:
+
+      vcruntime140.dll        MISSING
+      vcruntime140_1.dll      MISSING
+      msvcp140.dll            MISSING
+      msvcp140_1.dll          MISSING
+      msvcp140_clr0400.dll    PRESENT
+      vcruntime140_clr0400.dll PRESENT
+
+  Cuatro ausentes y las variantes de .NET presentes. Con eso el mensaje deja de leerse como
+  "falta `c10.dll`" y pasa a leerse como lo que es.
+
+  Se descartó por el camino la hipótesis de un wheel corrupto —el hash estaba verificado— y la
+  de una versión de Python incompatible: el wheel era el correcto para 3.11 en Windows x64.
+
+- **Solución:** `winget install --id Microsoft.VCRedist.2015+.x64` (14.51.36247.0). Las cuatro
+  DLL pasaron a estar presentes y `torch 2.13.0+cpu` importó. **La instalación de un runtime
+  del sistema se consultó antes de ejecutarla**: es un cambio fuera del repositorio y la
+  decisión no le corresponde al Ejecutor.
+
+- **Prevención:** ninguna herramienta del proyecto puede impedir esto, y decirlo es más útil
+  que inventar una defensa. Lo que sí queda es **un diagnóstico de dos minutos escrito**: ante
+  un `import` que falla nombrando una DLL que existe, la primera comprobación es el runtime en
+  `System32`, no el paquete. `scripts/build_rag_index.py` y `scripts/evaluate_retrieval.py`
+  atrapan el fallo de carga del modelo y salen con código 1 nombrándolo, en vez de arrastrar
+  una traza de importación.
+
+- **Aprendizaje:** **es una clase de error, no un incidente.** Ocurrió **dos veces con cuatro
+  días de diferencia** y el mismo mecanismo exacto: el 2026-08-26 con **LightGBM**
+  (`lib_lightgbm.dll`, ver la nota del stack en `docs/ROADMAP.md`) y el 2026-08-30 con
+  **torch**. La primera vez se resolvió sustituyendo la dependencia, que era barato porque
+  `HistGradientBoostingClassifier` hacía lo mismo; la segunda no había sustituto, porque
+  `sentence-transformers` era un requisito explícito.
+
+  La regla generalizable: **en Windows, "instala" y "carga" son dos garantías distintas, y el
+  verde del gestor de paquetes solo cubre la primera.** Cualquier dependencia con extensiones
+  nativas —torch, LightGBM, XGBoost, ONNX Runtime— debe verificarse con un `import` real antes
+  de darse por instalada, y ese `import` pertenece a la CI tanto como los tests.
+
+  Efecto colateral que conviene registrar: instalar el runtime **volvió utilizable LightGBM**,
+  de modo que la afirmación negativa del ROADMAP caducó. Se corrigió allí en vez de borrarse,
+  y la sustitución del ADR-0007 se mantiene porque reejecutarla movería un número dentro del
+  ruido.
+
+---
+
+### 005 — Verificación contaminada: tres consultas escritas después de leer los fragmentos
+
+- **Fecha:** 2026-08-30
+- **Fase:** 03-genai
+
+- **Síntoma:** al cerrar la construcción del índice vectorial se ejecutaron **tres consultas de
+  prueba** contra el corpus. Las tres devolvieron el fragmento correcto **en el primer puesto**,
+  con scores entre 0,8690 y 0,8811, y el resultado se reportó como verificación de que el
+  sistema recuperaba bien.
+
+  Un turno después, un set de **26 preguntas con respuesta** anotadas a mano midió sobre el
+  mismo índice y la misma estrategia: **hit@1 = 0,346**. Una de cada tres, no tres de tres.
+
+- **Causa raíz:** las tres consultas **se redactaron después de leer los fragmentos**, en la
+  misma sesión en que se había transcrito el corpus. Compartían vocabulario con su fragmento
+  objetivo porque el vocabulario del fragmento estaba a la vista al escribirlas.
+
+  El mecanismo, dicho sin rodeos: **quien escribe la consulta mirando el chunk mide su propia
+  memoria y no el sistema.** Un recuperador denso empareja superficies; una consulta construida
+  con las palabras del documento le entrega precisamente la superficie que necesita. El
+  experimento estaba resuelto antes de ejecutarse.
+
+  Lo que lo hace especialmente traicionero es que **el fallo es en la dirección optimista y no
+  produce ningún síntoma**. Un test frágil que falla de más molesta y se arregla. Aquí los tres
+  resultados eran correctos, los scores altos, las citas exactas, y todo el conjunto se leía
+  como una demostración de que el componente funcionaba.
+
+- **Diagnóstico:** no se detectó revisando las consultas —seguían pareciendo razonables— sino
+  al **construir un set con un procedimiento distinto** y ver la diferencia de magnitud. La
+  confirmación vino de medir el **solapamiento léxico** entre pregunta y fragmento anotado:
+  0,100 en el documento en inglés, 0,169 en la Ley 1266, 0,254 en la política interna y 0,276
+  en la Circular Básica. Las tres consultas originales estaban muy por encima de ese rango,
+  porque estaban hechas de las mismas palabras.
+
+- **Solución:** el set de `data/eval/retrieval_questions.yaml` sustituye a las tres consultas
+  como evidencia. Las cifras del turno anterior no se borran: quedan como lo que eran, una
+  demostración de funcionamiento y no una medición.
+
+- **Prevención:** cuatro reglas, y la última es la que convierte a las otras tres en algo
+  verificable en vez de una promesa.
+
+  1. **Enumerar las tareas del usuario antes que los contenidos del corpus.** La pregunta sale
+     de lo que un analista necesita hacer, no de lo que un documento dice.
+  2. **Redactar en el registro del usuario y no en el del documento.** "Puntaje" y no *score*;
+     "reporte negativo" y no *dato negativo*; "que le puede afectar la plata" y no *que pueda
+     afectar su capacidad de pago*.
+  3. **Anotar el fragmento correcto antes de ejecutar ninguna búsqueda.** Anotar después es
+     anotar lo que el sistema encuentra.
+  4. **Medir el solapamiento léxico entre pregunta y fragmento, y reportarlo.**
+     `scripts/evaluate_retrieval.py` lo calcula en cada corrida. Un set contaminado puntúa alto
+     ahí, y la regla 3 deja de depender de la palabra de quien anotó.
+
+- **Aprendizaje:** **una verificación diseñada por quien construyó el sistema, después de
+  construirlo, tiende a preguntar lo que el sistema sabe responder.** No hace falta mala fe:
+  basta con tener el material fresco en la cabeza.
+
+  Se conecta con la sección 6.1 de `docs/METHODOLOGY.md` —"una métrica que no puede fallar no
+  prueba nada"— por un lado que allí no estaba escrito. El documento advertía sobre métricas
+  cuyo **baseline** las hace triviales; esto es una métrica cuyo **conjunto de prueba** la hace
+  trivial. La defensa es la misma que para el resto del proyecto: **el procedimiento que
+  produce la evidencia se escribe y se mide, no se declara.**
+
+---
+
+### 006 — Un plan vacío del planificador se aceptó como respuesta válida
+
+- **Fecha:** 2026-08-31
+- **Fase:** 03-genai
+
+- **Síntoma:** una consulta que necesitaba herramientas terminó **sin invocar ninguna**. El
+  analista preguntaba, sobre un solicitante cargado, cómo quedaría el puntaje si el cliente
+  tuviera otro cupo y no registrara mora en un mes, y si podía prometerle la aprobación. El
+  copiloto respondió en prosa explicando qué haría, con qué herramientas lo haría y en qué
+  orden — y no ejecutó ninguna. La respuesta salió larga, correcta en su forma, sin un solo
+  número y sin una sola cita. El grafo la dio por terminada con
+  `outcome = answered_without_tools` y `evidencia suficiente: no`.
+
+  Nada falló. No hubo excepción, ni herramienta en rojo, ni ciclo agotado: hubo una respuesta
+  bien redactada sobre por qué no había respuesta.
+
+- **Causa raíz:** la arista condicional que sigue al nodo de planificación enviaba un plan
+  vacío **directamente al nodo de síntesis**. Ese enrutamiento confunde dos situaciones que
+  desde ahí son indistinguibles:
+
+  1. la consulta genuinamente no necesita ninguna herramienta, y
+  2. el planificador falló en proponer la que hacía falta.
+
+  Las dos llegan al enrutador como la misma cosa —una lista vacía— y el enrutador solo ve la
+  lista. Lo único capaz de separarlas es leer **la pregunta contra la evidencia reunida**, que
+  es exactamente lo que hace el nodo evaluador de suficiencia, y ese nodo estaba fuera del
+  camino en ese caso concreto. El ciclo de re-planificación existía y no podía activarse para
+  el único fallo que no deja rastro.
+
+  El modo de falla es de la familia de la **entrada 001** de este documento: una ausencia
+  tratada como un resultado. Allí GitHub descartaba un evento en silencio; aquí el grafo
+  interpreta "cero herramientas" como "cero herramientas necesarias".
+
+- **Diagnóstico:** no se detectó leyendo el grafo, que era coherente, ni con los tests, que
+  ejercitan las herramientas por separado y no el enrutamiento. Se detectó **corriendo el
+  agente sobre una consulta escrita a mano** para el reporte del turno, y comparando lo que la
+  consulta pedía con la sección `HERRAMIENTAS INVOCADAS`, que decía *"ninguna: la consulta no
+  necesitó herramientas"* sobre una consulta que pedía una simulación. Es la sección 6.4 de
+  `docs/METHODOLOGY.md` haciendo su trabajo: **una superficie nueva no se cierra sin una
+  llamada real.**
+
+- **Solución:** dos cambios en el mismo turno, en `agent/graph.py` y `agent/prompts.py`.
+
+  1. **Un plan vacío se enruta al evaluador**, no a la síntesis. El ciclo de re-planificación
+     cubre así también ese caso: el evaluador lee la pregunta, dice que la evidencia no
+     alcanza, y el planificador vuelve a intentarlo con esa observación.
+  2. Las instrucciones del planificador declaran que **su salida son llamadas y no respuestas**,
+     y que toda consulta sobre un solicitante, un escenario o una norma necesita al menos una
+     herramienta.
+
+  Verificado sobre la misma consulta: pasa de cero llamadas a cuatro, incluida la corrección de
+  un argumento que la primera vuelta había errado.
+
+- **Prevención:** la corrección sube de nivel en la jerarquía de la sección 6.5 de
+  `docs/METHODOLOGY.md`. El punto 2 es **nivel 3** —una instrucción en un prompt, que se cumple
+  mientras el modelo la siga— y por sí solo no habría bastado. El punto 1 es **nivel 1**: por
+  la forma del grafo, ninguna respuesta puede escribirse sin que el evaluador haya visto la
+  pregunta contra la evidencia, y "el planificador no llamó a nada" deja de ser un camino que
+  evita el control.
+
+  Queda además **medido y no supuesto**: `scripts/evaluate_agent.py` reporta el recall de
+  tool-calling sobre el set anotado, de modo que una regresión de este tipo aparece como un
+  número y no como una respuesta que se lee bien.
+
+- **Aprendizaje:** **en un grafo, un conjunto vacío no es una decisión: es la ausencia de una
+  decisión, y enrutarlo como si fuera una decisión es tratar un fallo como un resultado.**
+
+  La formulación general que queda para el proyecto: cuando una arista condicional ramifica
+  sobre el **tamaño** de algo que otro nodo produjo, hay que preguntarse qué distingue "produjo
+  cero porque cero era correcto" de "produjo cero porque falló". Si nada en esa arista los
+  distingue, el camino de cero tiene que pasar por el control que sí puede distinguirlos,
+  aunque cueste una llamada de más en el caso en que cero era correcto. Un control que se
+  saltea justo en el caso ambiguo no es un control.
+
+---
+
+### 007 — El instrumento de medición medía su propio redondeo, y la evidencia falsa se leía igual que la buena
+
+- **Fecha:** 2026-08-31
+- **Fase:** 03-genai
+
+- **Síntoma:** la evaluación del copiloto reportó que el nodo de síntesis había asignado una
+  banda de decisión por su cuenta —la «grieta 1» del ADR-0009— en **2 de 6** consultas primero, y
+  en **1 de 19** después. La cifra real es **0 de 19**. Ninguna de las tres instancias reportadas
+  ocurrió: las tres las produjo el instrumento.
+
+  No hubo excepción, ni valor absurdo, ni test en rojo. Hubo un número plausible, en el rango que
+  uno esperaría, en la fila de la tabla que este turno existía para llenar.
+
+- **Causa raíz:** el detector compara los pares (probabilidad, banda) que la respuesta **atribuye**
+  contra los que las herramientas **devolvieron**. Una respuesta escribe la probabilidad en prosa,
+  y escribirla la redondea. El detector comparaba a una precisión que él mismo imponía, de modo que
+  **medía la diferencia entre dos escrituras del mismo número y la reportaba como una banda que el
+  modelo se había inventado.**
+
+  El mismo mecanismo se manifestó tres veces, en tres capas distintas, y esa repetición es lo
+  interesante:
+
+  1. **En la comparación.** La herramienta resolvió `0,6407` y la respuesta escribió `0,641`. Con
+     una comparación a cuatro decimales fijos, dos números distintos.
+  2. **Otra vez en la comparación, con el signo cambiado.** Corregido lo anterior tomando la
+     precisión de la respuesta, la respuesta escribió `0,0599` para ilustrar un borde y el
+     detector lo aceptó o lo rechazó según cuántos decimales hubiera usado.
+  3. **En el almacenamiento.** Ya con la comparación bien, la transcripción guardaba la
+     probabilidad de la herramienta redondeada a cuatro decimales. La herramienta había resuelto
+     `0.10757135201580555`; la respuesta la citó **fielmente** como `0,10757` y como `0,108`; y
+     contra un valor almacenado como `0,1076` la cita de cinco decimales no se podía confirmar.
+     **El instrumento era menos preciso que aquello que comprobaba.**
+
+  La causa profunda no es la aritmética: es que **el instrumento de medición se escribió sin
+  tests**. El resto del proyecto tiene 280; el detector de la métrica central del turno tenía
+  cero, porque «es un script de análisis».
+
+- **Diagnóstico:** ninguna de las tres se detectó leyendo el código. Las tres se detectaron
+  **abriendo la instancia concreta que el contador señalaba y preguntando qué había pasado ahí**.
+  La tercera se cerró de la única forma que la cerraba: **volviendo a puntuar la fila 7 con el
+  artefacto anclado**, que es determinista, y comparando el número real contra lo que la respuesta
+  había escrito y contra lo que la transcripción había guardado.
+
+  Es exactamente la disciplina de la sección 6.2 de `docs/METHODOLOGY.md` aplicada al instrumento
+  en vez de al sistema: medir, no suponer — incluida la suposición de que el medidor mide.
+
+- **Solución:** tres cambios en `scripts/evaluate_agent.py`. La comparación toma la precisión de
+  la respuesta: un par está respaldado cuando alguna herramienta devolvió la misma banda para un
+  número que **redondea al que la respuesta escribió**. El almacenamiento guarda la probabilidad
+  **a precisión completa**. Y el replay de la transcripción **recalcula** el veredicto en vez de
+  leer el que se guardó, para que un registro escrito antes de una corrección se puntúe con la
+  corrección.
+
+  Dos defectos hermanos del mismo turno, con la misma forma —un agregado calculado sobre datos que
+  no eran los que decía— quedaron corregidos a la vez: una tasa sobre denominador vacío se
+  imprimía como `0,000` en vez de `sin datos`, y un registro cuya corrida había fallado se contaba
+  como una respuesta sin afirmaciones, arrastrando todas las medias hacia cero.
+
+- **Prevención:** `tests/test_agent_eval.py` fija los tres casos reales que expusieron el fallo,
+  con los números que de verdad ocurrieron: `0,641` contra `0,6407`, `0,0599` contra `0,06`, y
+  `0,10757` contra `0.10757135201580555`. Sube la garantía de **nivel 3** —«acordarse de que las
+  respuestas redondean»— a **nivel 2**: un test lo detecta.
+
+  La regla que queda, y es la que cuesta aceptar: **un script de análisis que produce una cifra
+  que va a un documento es código de producción.** No porque corra en producción, sino porque su
+  salida se cita.
+
+- **Aprendizaje:** **un instrumento de evaluación es código sin tests hasta que alguien se los
+  escribe, y sus fallos producen evidencia falsa que se lee exactamente igual que la evidencia
+  buena.**
+
+  El proyecto ya tenía una entrada sobre una verificación contaminada —la 005, sobre un set de
+  preguntas escrito después de leer los fragmentos—, y esta es su reverso. Allí el **conjunto de
+  prueba** hacía trivial la métrica; aquí el **medidor** la falseaba. Las dos fallan hacia el mismo
+  lado peligroso: producen un número que se puede pegar en una tabla, defender en una reunión y
+  citar seis meses después, sin que nada en el sistema haya avisado.
+
+  Y hay una asimetría que conviene tener presente al escribir el próximo instrumento: **un sistema
+  que falla se nota porque alguien lee su salida; un medidor que falla no se nota porque su salida
+  ES lo que se cree.** La única defensa es tratarlo como lo que es —código— y aplicarle lo que el
+  proyecto le aplica a todo lo demás: un test por cada caso real que lo expuso, y la costumbre de
+  abrir la instancia concreta antes de creerse el agregado.
