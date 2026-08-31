@@ -107,6 +107,19 @@ class Settings(BaseSettings):
         return self.data_dir / "corpus"
 
     @property
+    def vector_store_dir(self) -> Path:
+        """Directory for the persistent ChromaDB index built from `data/corpus/`.
+
+        Derived data, not a source: it is gitignored and rebuilt by
+        `scripts/build_rag_index.py`. The corpus that produces it is versioned instead,
+        because without the corpus the index is not reproducible.
+
+        Returns:
+            Absolute path to `data/vector_store/`.
+        """
+        return self.data_dir / "vector_store"
+
+    @property
     def docs_dir(self) -> Path:
         """Project documentation directory.
 

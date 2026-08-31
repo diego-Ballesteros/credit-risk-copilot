@@ -38,6 +38,11 @@ data/**
 !data/**/
 !data/**/.gitkeep
 
+# El corpus normativo SÍ se versiona: son documentos de texto, pesan poco, y sin
+# ellos el índice vectorial no es reproducible. El índice, en cambio, es derivado.
+!data/corpus/**
+data/vector_store/
+
 # --- Notebooks --------------------------------------------------------------
 .ipynb_checkpoints/
 */.ipynb_checkpoints/*
