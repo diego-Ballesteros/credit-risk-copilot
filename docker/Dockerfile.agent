@@ -5,6 +5,14 @@
 # the whole reason the model service is a separate image: about 604 MB of dependency that a
 # request for `P(default)` would otherwise pay for and never call.
 #
+# **`torch` resolves against the CPU-only wheel index**, declared in `pyproject.toml`. On
+# Linux the default wheel drags 19 CUDA and NVIDIA packages that nothing here calls - the
+# embedding model runs on CPU - and they are not small: measured against the published
+# wheels, 2,596.5 MB of Linux wheel bytes removed against 182.9 MB added back by
+# `torch==2.13.0+cpu`. **The builder therefore needs network access to
+# download.pytorch.org**, not only to PyPI; a build behind a proxy that allows one and not
+# the other fails at the sync step with a resolution error and not with a timeout.
+#
 # The only difference from `Dockerfile.model` is `--group agent` in the sync, and that is
 # deliberate: one difference is auditable, and two files that drift apart are not.
 #

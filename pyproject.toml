@@ -62,6 +62,11 @@ agent = [
     "chromadb>=1.5.9",
     "langgraph>=1.2.11",
     "sentence-transformers>=6.0.0",
+    # Declared even though `sentence-transformers` already requires it, and the reason is
+    # mechanical rather than stylistic: `tool.uv.sources` only rewrites the index of a
+    # **direct** dependency. Left transitive, the CPU-only index below is ignored in silence
+    # and the CUDA wheels come back - which is exactly what happened on the first attempt.
+    "torch>=2.0",
 ]
 
 # What only the phase-2 measurement scripts import. Nothing under `src/` reaches for any of
@@ -81,6 +86,30 @@ research = [
 # The images opt out with `--no-default-groups` and then name only what they need, which is
 # what makes the split a property of the build rather than of somebody's memory.
 default-groups = ["dev", "agent", "research"]
+
+# ---------------------------------------------------------------------------
+# `torch` resolves against the CPU-only wheel index
+# ---------------------------------------------------------------------------
+# **Why.** On Linux the default PyPI wheel of `torch` declares a dependency on the CUDA
+# runtime, and the lockfile showed it pulling **19 packages** - `nvidia-cublas`,
+# `nvidia-cudnn-cu13`, `nvidia-nccl-cu13`, `triton` and the rest - all marked
+# `sys_platform == 'linux'`. They never appeared on the development machine, which is
+# Windows, so the cost was invisible until the image was resolved for Linux.
+#
+# **Nothing in this system uses a GPU.** `torch` is here only because
+# `sentence-transformers` needs it to embed a query, and that embedding runs on CPU. The
+# CUDA runtime was being installed to never be called.
+#
+# `explicit = true` means this index is used **only** for the packages that name it below.
+# Without it, uv would prefer this index for every package it happens to host, which is a
+# quiet way to start resolving unrelated dependencies from a mirror nobody audited.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
 
 # ---------------------------------------------------------------------------
 # Ruff

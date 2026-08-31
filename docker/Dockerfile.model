@@ -6,7 +6,10 @@
 # only `[project.dependencies]`, which names none of them, plus a probe in
 # `.github/workflows/docker.yml` that imports the application inside the built image and
 # fails the build if any of the five is in `sys.modules`. Measured on the development
-# environment, those five and their transitive closure are about 604 MB.
+# environment, those five and their transitive closure are about 604 MB - and on Linux they
+# used to drag 2,596.5 MB of CUDA wheels on top, until `pyproject.toml` pinned `torch` to the
+# CPU-only index. None of that reaches this image either way; the note is here so that a
+# reader who sees the model image grow knows which lever was already pulled and where.
 #
 # Build from the repository root so `.dockerignore` applies:
 #     docker build -f docker/Dockerfile.model -t credit-risk-model .

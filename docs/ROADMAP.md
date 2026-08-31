@@ -463,7 +463,7 @@ credit-risk-copilot/
 │   ├── explain/       shap_service · counterfactual
 │   ├── rag/           documents · chunking · embeddings · vectorstore
 │   ├── agent/         graph · state · tools · prompts
-│   ├── api/           app · schemas · dependencies
+│   ├── api/           schemas · dependencies · model_app · agent_app
 │   └── monitoring/    drift · metrics
 │
 ├── scripts/                       ← scripts de ejecución (requisito)
@@ -472,11 +472,13 @@ credit-risk-copilot/
 │   ├── run_prediction.py
 │   ├── build_rag_index.py
 │   ├── run_online_simulation.py
-│   └── run_agent_eval.py
+│   ├── run_agent_latency.py
+│   └── evaluate_agent.py
 │
 ├── tests/
 ├── docker/
-│   ├── Dockerfile.api
+│   ├── Dockerfile.model           ← imagen del modelo, sin torch (ADR-0010)
+│   ├── Dockerfile.agent           ← imagen del copiloto
 │   └── docker-compose.yml
 ├── infra/                         ← Terraform (Reto ML 2)
 └── .github/workflows/ci.yml
@@ -681,7 +683,9 @@ develop      ●──●──●──●──●──●──●──●�
 - [ ] Schemas Pydantic con validación estricta y manejo de errores
 - [ ] Logging estructurado con IDs de correlación
 - [ ] Dockerfile multi-stage, usuario no-root, imagen optimizada
-- [ ] `docker-compose.yml`: API + MLflow + ChromaDB
+- [ ] `docker-compose.yml`: **dos servicios de aplicación**, `model` y `agent`. Ni MLflow ni
+      ChromaDB son servicios del compose: **MLflow es remoto** y **Chroma va embebido** en el
+      proceso del copiloto como cliente persistente sobre un índice montado (ADR-0010)
 - [ ] Tests de integración de los endpoints
 - [ ] GitHub Actions: build y push a GHCR → **Reto ML 1 cubierto**
 

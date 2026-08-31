@@ -974,3 +974,130 @@ entrada 007 de `docs/ERRORS_AND_LEARNINGS.md`.
 - **Reproducción:** `uv run python scripts/evaluate_agent.py`, o `--resume` para continuar sobre
   una transcripción existente. Experimento `credit-risk-agent` en MLflow. Evidencia completa en
   [`docs/analysis/agent-evaluation-evidence.md`](analysis/agent-evaluation-evidence.md).
+
+---
+
+### 013 — Métricas online del sistema desplegado: latencia, throughput, error, drift y el PR-AUC que no se puede leer
+
+- **Fecha:** 2026-08-31
+- **Fase:** 04-production
+- **Objeto evaluado:** el **sistema desplegado**, no el modelo. Las 3.000 peticiones cruzan
+  HTTP contra `uvicorn credit_copilot.api.model_app:app` y pagan el parseo de JSON, las 23
+  validaciones Pydantic, la verificación del contrato de datos, el middleware de correlación
+  y la serialización. Medir esto llamando a `predict_proba` en proceso mediría scikit-learn,
+  que es lo único que nadie espera.
+- **Dónde corrió:** uvicorn en la máquina de desarrollo. **No en el contenedor**: esa máquina
+  no tiene daemon de Docker. Las cifras describen este proceso en este equipo.
+- **Datos:** 3.000 filas muestreadas de las 30.000 de UCI 350 con `random_state=42`, más una
+  fracción **declarada** del 5% de peticiones deliberadamente malformadas.
+
+#### El límite que gobierna esta entrada, declarado antes de las cifras
+
+**No existe un holdout limpio, así que una de las cinco métricas no se puede leer.** El
+artefacto productivo se ajustó sobre **las 30.000 filas** — el propio
+`scripts/register_production_model.py` lo escribe en un tag del run, y
+`run_online_simulation.py` **lo lee** en vez de suponerlo:
+
+    registry tag `fitted_on` = 'all 30000 rows - artefact, not an estimate'
+
+| Métrica | ¿Afectada? | Por qué |
+| --- | --- | --- |
+| Latencia, throughput, tasa de error | **No** | El costo de servir una fila no depende de si el modelo la vio |
+| Drift por feature | **Degenerada** | El flujo es submuestra de la referencia: PSI ≈ 0 por construcción |
+| **PR-AUC del flujo** | **Sí** | Mide memorización, no desempeño |
+
+#### Latencia y throughput
+
+**Ninguna latencia es interpretable sin su concurrencia y su número de workers.**
+
+| Despliegue | Concurrencia | p50 | p95 | p99 | máx | Throughput |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 worker | 1 | **75,6 ms** | 84,1 ms | 91,3 ms | 193,3 ms | 14,1 req/s |
+| 1 worker | 8 | 527,4 ms | 643,2 ms | 692,4 ms | 870,4 ms | 15,8 req/s |
+| **4 workers** | 8 | **152,3 ms** | 247,1 ms | 279,6 ms | 633,1 ms | **53,2 req/s** |
+
+**De concurrencia 1 a 8 con un worker, la latencia se multiplica por 7 y el throughput no se
+mueve.** Es la firma de un cuello serializado: el tiempo de servicio real son los **75,6 ms**
+de la primera fila, y los 527 ms de la segunda son 451 ms de cola. Con 4 workers el
+throughput sube **3,4×**. El cuello era el proceso único, no el modelo. Costo declarado: cada
+worker carga su propia copia del artefacto, verificado en el log de arranque.
+
+Una petición rechazada cuesta **2,0 ms** contra 75,6 ms de una válida a concurrencia 1: el
+contrato la rechaza **38 veces más barato** que puntuarla, porque no llega al artefacto.
+
+#### Tasa de error
+
+| | n=3.000 |
+| --- | ---: |
+| Tasa de error total | **4,4000%** (132 de 3.000) |
+| `invalid_request` (422) | 132 |
+| **Fallos inesperados sobre tráfico válido** | **0** de 2.868 |
+| Fallos de transporte y timeouts | 0 |
+
+Los 132 son la fracción malformada inyectada a propósito, y los cuatro tipos —campo faltante,
+nulo explícito, fuera de rango, categoría desconocida— se rechazaron **todos con 422 y ninguno
+devolvió una probabilidad**. Sin esa inyección el desglose por tipo estaría vacío, que no es
+una medición.
+
+#### Discriminación: el número que NO es un resultado
+
+| Métrica | Flujo servido (en muestra) | Referencia CV 5 folds | Diferencia |
+| --- | ---: | ---: | ---: |
+| **PR-AUC** | **0,672144** | **0,564230 ± 0,007962** | **+0,107914** |
+| ROC-AUC | 0,844692 | 0,786279 | +0,058413 |
+| Brier | 0,117997 | 0,133408 | −0,015411 |
+| precision@top-10% | 0,773519 | 0,706333 | +0,067186 |
+
+**Las cuatro se mueven hacia "mejor", y ese signo es la prueba de que no son un resultado.**
+Degradación real habría dado PR-AUC **menor** que 0,564. El artefacto vio estas 2.868 filas,
+así que **+0,1079 es optimismo por memorización**. El script se niega a llamarlo degradación y
+etiqueta el run con `pr_auc_gap_reading = optimism`. La magnitud —19% sobre 0,564— es acotada y
+consistente con un bosque de `max_depth=10` y `min_samples_leaf=18`, que no memoriza fila a
+fila.
+
+**Cómo se construye el holdout sin contaminar, para el turno que quiera medir degradación de
+verdad:** registrar una versión compañera ajustada sobre un 80% estratificado con
+`random_state=42`, servir el 20% restante y pasar sus `ID` a `--holdout-ids`. Requiere una
+segunda versión en el registro, que es una decisión y no un movimiento — el ADR-0010 fijó la
+versión productiva a propósito.
+
+#### Drift
+
+**Prueba:** PSI sobre 10 bins por cuantiles **de la referencia**, con KS de dos muestras al
+lado. Categóricas sobre los niveles de `schema.py` más los códigos del ADR-0004.
+**Umbrales declarados, no derivados de estos datos:** <0,10 ruido, 0,10–0,25 moderado,
+≥0,25 accionable. PSI es la primaria porque su umbral no se mueve con el tamaño de muestra;
+el p-valor de KS sí, y por eso se reporta como distancia y no como disparador.
+
+**Máximo PSI = 0,0092** (`PAY_STATUS_2`), once veces por debajo del umbral de ruido. Ninguna
+de las 23 features señala.
+
+**Es un control negativo, no una ausencia de drift.** El flujo es submuestra de la referencia,
+así que PSI ≈ 0 es lo esperado. Lo que la corrida establece es que **el detector no dispara
+sobre distribuciones idénticas**; que sí dispara cuando debe está en `tests/test_drift.py`, con
+controles positivos: 0,8 σ da PSI ≥ 0,25, 2 σ da PSI > 1,0, y el PSI es monótono en el
+desplazamiento. **Un detector probado solo contra el caso sin señal no está probado.**
+
+#### Latencia y costo del copiloto
+
+**n = 5 consultas** de `data/eval/agent_queries.yaml`, de a una contra `POST /chat`. **No se
+llamó al juez**: la calidad es la entrada 012, y re-juzgar cinco consultas produciría una cifra
+más ruidosa que la que duplicaría.
+
+| | Esta corrida (n=5) | Entrada 012 (n=19) |
+| --- | ---: | ---: |
+| Latencia mediana | **39,52 s** | no medida |
+| Latencia mín / máx | 27,09 s / 47,67 s | — |
+| Costo medio por consulta | 0,1502 USD | 0,209 USD |
+| Llamadas al LLM, media | 3,40 | 5,11 |
+| Citas, media | 5,20 | — |
+
+**Las cinco primeras son más baratas que la media de las diecinueve porque usan menos ciclos**,
+no porque el sistema haya mejorado: cuatro convergieron en un ciclo y solo `a05` usó el
+segundo. Es un subconjunto distinto y las dos cifras se reportan juntas por eso. **n=5 no
+permite un percentil**, así que no se reporta ninguno.
+
+- **Reproducción:** `uv run python scripts/run_online_simulation.py` y
+  `uv run python scripts/run_agent_latency.py --n 5`, contra las dos APIs levantadas.
+  Experimento `credit-risk-online` en MLflow, runs `3c2b2739…` y `967e9d20…`. Evidencia
+  completa en [`docs/analysis/online-metrics-evidence.md`](analysis/online-metrics-evidence.md).
