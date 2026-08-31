@@ -433,3 +433,88 @@ entrada corregida se corrige con una entrada nueva que referencia a la anterior.
   distingue, el camino de cero tiene que pasar por el control que sí puede distinguirlos,
   aunque cueste una llamada de más en el caso en que cero era correcto. Un control que se
   saltea justo en el caso ambiguo no es un control.
+
+---
+
+### 007 — El instrumento de medición medía su propio redondeo, y la evidencia falsa se leía igual que la buena
+
+- **Fecha:** 2026-08-31
+- **Fase:** 03-genai
+
+- **Síntoma:** la evaluación del copiloto reportó que el nodo de síntesis había asignado una
+  banda de decisión por su cuenta —la «grieta 1» del ADR-0009— en **2 de 6** consultas primero, y
+  en **1 de 19** después. La cifra real es **0 de 19**. Ninguna de las tres instancias reportadas
+  ocurrió: las tres las produjo el instrumento.
+
+  No hubo excepción, ni valor absurdo, ni test en rojo. Hubo un número plausible, en el rango que
+  uno esperaría, en la fila de la tabla que este turno existía para llenar.
+
+- **Causa raíz:** el detector compara los pares (probabilidad, banda) que la respuesta **atribuye**
+  contra los que las herramientas **devolvieron**. Una respuesta escribe la probabilidad en prosa,
+  y escribirla la redondea. El detector comparaba a una precisión que él mismo imponía, de modo que
+  **medía la diferencia entre dos escrituras del mismo número y la reportaba como una banda que el
+  modelo se había inventado.**
+
+  El mismo mecanismo se manifestó tres veces, en tres capas distintas, y esa repetición es lo
+  interesante:
+
+  1. **En la comparación.** La herramienta resolvió `0,6407` y la respuesta escribió `0,641`. Con
+     una comparación a cuatro decimales fijos, dos números distintos.
+  2. **Otra vez en la comparación, con el signo cambiado.** Corregido lo anterior tomando la
+     precisión de la respuesta, la respuesta escribió `0,0599` para ilustrar un borde y el
+     detector lo aceptó o lo rechazó según cuántos decimales hubiera usado.
+  3. **En el almacenamiento.** Ya con la comparación bien, la transcripción guardaba la
+     probabilidad de la herramienta redondeada a cuatro decimales. La herramienta había resuelto
+     `0.10757135201580555`; la respuesta la citó **fielmente** como `0,10757` y como `0,108`; y
+     contra un valor almacenado como `0,1076` la cita de cinco decimales no se podía confirmar.
+     **El instrumento era menos preciso que aquello que comprobaba.**
+
+  La causa profunda no es la aritmética: es que **el instrumento de medición se escribió sin
+  tests**. El resto del proyecto tiene 280; el detector de la métrica central del turno tenía
+  cero, porque «es un script de análisis».
+
+- **Diagnóstico:** ninguna de las tres se detectó leyendo el código. Las tres se detectaron
+  **abriendo la instancia concreta que el contador señalaba y preguntando qué había pasado ahí**.
+  La tercera se cerró de la única forma que la cerraba: **volviendo a puntuar la fila 7 con el
+  artefacto anclado**, que es determinista, y comparando el número real contra lo que la respuesta
+  había escrito y contra lo que la transcripción había guardado.
+
+  Es exactamente la disciplina de la sección 6.2 de `docs/METHODOLOGY.md` aplicada al instrumento
+  en vez de al sistema: medir, no suponer — incluida la suposición de que el medidor mide.
+
+- **Solución:** tres cambios en `scripts/evaluate_agent.py`. La comparación toma la precisión de
+  la respuesta: un par está respaldado cuando alguna herramienta devolvió la misma banda para un
+  número que **redondea al que la respuesta escribió**. El almacenamiento guarda la probabilidad
+  **a precisión completa**. Y el replay de la transcripción **recalcula** el veredicto en vez de
+  leer el que se guardó, para que un registro escrito antes de una corrección se puntúe con la
+  corrección.
+
+  Dos defectos hermanos del mismo turno, con la misma forma —un agregado calculado sobre datos que
+  no eran los que decía— quedaron corregidos a la vez: una tasa sobre denominador vacío se
+  imprimía como `0,000` en vez de `sin datos`, y un registro cuya corrida había fallado se contaba
+  como una respuesta sin afirmaciones, arrastrando todas las medias hacia cero.
+
+- **Prevención:** `tests/test_agent_eval.py` fija los tres casos reales que expusieron el fallo,
+  con los números que de verdad ocurrieron: `0,641` contra `0,6407`, `0,0599` contra `0,06`, y
+  `0,10757` contra `0.10757135201580555`. Sube la garantía de **nivel 3** —«acordarse de que las
+  respuestas redondean»— a **nivel 2**: un test lo detecta.
+
+  La regla que queda, y es la que cuesta aceptar: **un script de análisis que produce una cifra
+  que va a un documento es código de producción.** No porque corra en producción, sino porque su
+  salida se cita.
+
+- **Aprendizaje:** **un instrumento de evaluación es código sin tests hasta que alguien se los
+  escribe, y sus fallos producen evidencia falsa que se lee exactamente igual que la evidencia
+  buena.**
+
+  El proyecto ya tenía una entrada sobre una verificación contaminada —la 005, sobre un set de
+  preguntas escrito después de leer los fragmentos—, y esta es su reverso. Allí el **conjunto de
+  prueba** hacía trivial la métrica; aquí el **medidor** la falseaba. Las dos fallan hacia el mismo
+  lado peligroso: producen un número que se puede pegar en una tabla, defender en una reunión y
+  citar seis meses después, sin que nada en el sistema haya avisado.
+
+  Y hay una asimetría que conviene tener presente al escribir el próximo instrumento: **un sistema
+  que falla se nota porque alguien lee su salida; un medidor que falla no se nota porque su salida
+  ES lo que se cree.** La única defensa es tratarlo como lo que es —código— y aplicarle lo que el
+  proyecto le aplica a todo lo demás: un test por cada caso real que lo expuso, y la costumbre de
+  abrir la instancia concreta antes de creerse el agregado.

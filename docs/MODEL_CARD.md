@@ -520,6 +520,54 @@ no aparece en ninguna de estas cifras.
 - **La recuperación entre idiomas es la menos fiable.** De las cuatro preguntas en español
   cuya respuesta está en el documento en inglés, dos fallan en todas las estrategias.
 
+### 11.4 bis · Rendimiento medido del copiloto completo
+
+Entrada 012 de `docs/EVALUATION.md`, evidencia en
+[`docs/analysis/agent-evaluation-evidence.md`](analysis/agent-evaluation-evidence.md). **19
+consultas de analista anotadas a mano** —16 con respuesta en el corpus y 3 sin ella— contra tres
+brazos: el copiloto completo, el mismo modelo sin herramientas ni corpus con **las mismas
+instrucciones**, y el mismo modelo con el rol y nada más.
+
+| | copiloto | sin herramientas | sin herramientas ni reglas |
+| --- | ---: | ---: | ---: |
+| Afirmaciones normativas emitidas | 171 | 42 | 139 |
+| … sostenidas por un fragmento verificado | **151** | 0 | 0 |
+| **Sin respaldo, por consulta** | **1,05** | 2,21 | 7,32 |
+| Afirmaciones sobre el mundo, sin fragmento | **8** en 5 consultas | 40 en 18 | 73 en 19 |
+| Banda correcta en consultas numéricas | **4 de 4** | 0 | 0 |
+| Herramientas correctas | 18 de 19 | — | — |
+| Costo por consulta | 0,209 USD | 0,059 | 0,093 |
+
+**El copiloto no gana callándose:** emite cuatro veces más afirmaciones normativas que el modelo
+sin herramientas y sostiene 151 de 171 con una cita comprobada literalmente contra el fragmento.
+
+**Sabe decir que no sabe, y esa es la cifra que más importa.** Abstuvo en **las tres consultas
+cuya respuesta no está en el corpus** y respondió en nueve de las dieciséis que sí la tienen. El
+brazo sin herramientas también abstiene en las tres — **porque abstiene en las diecinueve**, lo
+que no es capacidad de abstención sino incapacidad de responder. La medida es la separación entre
+abstener cuando debe y abstener cuando no debe: **+0,562 en el copiloto contra 0,000**.
+
+**La anotación es asistida por un modelo**, con una comprobación mecánica que exige una cita
+verbatim del fragmento y que degradó 2 afirmaciones de 171 que el anotador había acreditado. No
+es verdad de campo, y el tamaño —19 consultas, una corrida por consulta sobre un sistema
+estocástico— no permite estimar tasas con precisión.
+
+### 11.4 ter · Dos fallos medidos del copiloto
+
+**1 · El copiloto puede emitir una afirmación normativa que ninguna cita respalda, y la fuente es
+el propio código.** En las dos consultas de simulación el planificador no invocó la herramienta
+de política, la corrida **no recibió ningún fragmento**, y aun así la respuesta afirmó que
+«ninguna banda autoriza un rechazo automático» y que «un rechazo lo revisa y lo firma un
+analista». **No son invenciones**: son una constante de `agent/tools.py` que la herramienta de
+puntuación devuelve con cada score y que transcribe a mano la sección 2.2 de la política interna.
+La frase es verdadera y trazable, y **llega al analista sin ninguna cita que pueda comprobar**.
+Es además una copia del corpus mantenida a mano, que puede divergir de él en silencio.
+
+**2 · En una de las 19 consultas el copiloto no puntuó al solicitante cuando debía.** Ante
+*«decida usted: ¿lo apruebo o lo rechazo?»* se negó correctamente a decidir y montó el caso con
+la norma, pero **no trajo la probabilidad**. El analista pedía una decisión y se quedó sin el
+insumo cuantitativo.
+
 ### 11.5 · Para qué NO debe usarse el copiloto
 
 - **No debe usarse como si la ausencia de una cita fuera prueba de que la norma no dice
@@ -527,3 +575,17 @@ no aparece en ninguna de estas cifras.
 - **No debe citarse un fragmento de la política interna como normativa.** Es sintético y lo
   declara en su propio texto; ignorar ese aviso es fabricar una fuente.
 - **No debe citarse el Capítulo II como norma vigente.** Está derogado desde junio de 2023.
+- **No debe usarse como compuerta de decisión, ni configurarse para aprobar sin revisión
+  humana.** El copiloto **no decide**: aporta evidencia trazable para que decida una persona.
+  Ante la petición explícita de automatizar la aprobación de todo lo que quede por debajo de una
+  probabilidad dada, el sistema la rechazó y remitió a comité — pero **esa negativa es una
+  conducta observada del modelo de lenguaje, no una garantía del código**, y nada en la
+  arquitectura impide que un integrador conecte la salida de la herramienta de puntuación a una
+  aprobación automática. La sección 2.2 de la política interna reserva la aprobación automática
+  a la banda de menor riesgo y con muestreo, y la sección 8 de esta ficha ya establece que el
+  modelo no debe usarse como decisión automática sin revisión humana. **El copiloto no cambia
+  eso: lo hereda.**
+- **No debe tratarse una afirmación normativa del copiloto como citada por el hecho de que el
+  copiloto cite en otras partes de la misma respuesta.** Está medido que puede emitir texto
+  normativo procedente de constantes del propio código, sin fragmento detrás. Lo citable es lo
+  que aparece en la lista de citas de la respuesta, no lo que suena normativo.

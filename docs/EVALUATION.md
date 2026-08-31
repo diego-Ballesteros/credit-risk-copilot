@@ -878,12 +878,6 @@ de chunking**: un recuperador denso no evalúa si 0,19 cae dentro de [0,160 ; 0,
 
 - **Fecha:** 2026-08-31
 - **Fase:** 03-genai
-- **Estado: MEDICIÓN INCOMPLETA.** Cubrió **7 de las 19 consultas** antes de que la API de
-  Anthropic respondiera `Your credit balance is too low to access the Anthropic API`. **El
-  subconjunto no es aleatorio**: las consultas corren en el orden del archivo, de modo que lo
-  medido son las cuatro numéricas y las tres con solicitante, y **quedó sin correr todo lo que
-  probaba abstención, causalidad, límites y fallo ruidoso**. Cualquier lectura que extienda
-  estas cifras a esas capacidades es una extrapolación sin evidencia.
 - **Objeto evaluado:** el copiloto completo —cuatro herramientas con contrato Pydantic,
   planificador `claude-haiku-4-5`, evaluador de suficiencia y sintetizador `claude-opus-5`,
   ciclo acotado a 3 iteraciones— sobre el modelo anclado
@@ -891,8 +885,8 @@ de chunking**: un recuperador denso no evalúa si 0,19 cae dentro de [0,160 ; 0,
   métricas fijas no aplican aquí porque el objeto es otro.
 - **Datos:** `data/eval/agent_queries.yaml`, **19 consultas anotadas a mano** escritas desde las
   tareas de un analista y anotadas después; 16 con respuesta normativa en el corpus y 3 sin
-  ella, estas últimas **verificadas por búsqueda directa** sobre `data/corpus/`. De ellas
-  corrieron 7.
+  ella, estas últimas **verificadas por búsqueda directa** sobre `data/corpus/`. **Corrida
+  completa: 19 × 3 = 57 corridas, ninguna con error.**
 - **Protocolo:** tres brazos sobre las mismas consultas. `agent` con herramientas y corpus;
   `baseline` con el **mismo modelo y las mismas instrucciones**, sin herramientas ni corpus; y
   `baseline-bare` con el rol y nada más. Los prompts del agente y del `baseline` se **componen
@@ -901,56 +895,82 @@ de chunking**: un recuperador denso no evalúa si 0,19 cae dentro de [0,160 ; 0,
   solicitante, que es generoso con ellos. **Ningún prompt se ajustó después de ver una cifra.**
 - **Anotación:** asistida por `claude-opus-5` a esfuerzo `medium`, con **comprobación mecánica
   de cita**: toda afirmación que el juez llama sostenida debe traer una cita verbatim, y el
-  script verifica que esté en un fragmento que la corrida recibió. En esta corrida ninguna cita
-  ofrecida por el juez dejó de encontrarse. **Es anotación asistida y no verdad de campo.**
+  script verifica que esté en un fragmento que la corrida recibió. **Degradó 2 afirmaciones de
+  171** que el juez había acreditado sin respaldo real. **Es anotación asistida y no verdad de
+  campo.**
 
-**Métricas — 7 consultas, los tres brazos sobre el mismo conjunto**
+**Métricas — 19 consultas, los tres brazos sobre el mismo conjunto**
 
 | métrica | **agent** | baseline | baseline-bare |
 | --- | ---: | ---: | ---: |
-| Afirmaciones normativas emitidas | 58 | 12 | 29 |
-| **Afirmaciones normativas sin respaldo, por consulta** | **0,29** | 1,71 | 4,14 |
-| Groundedness | 0,966 | 0,000 \* | 0,000 \* |
-| Afirmaciones sobre el mundo (grieta 2) | **0** | 12 | 22 |
-| Consultas con grieta 1 | 1 de 7 | 0 | 0 |
-| Recall de tool-calling | 1,000 | — | — |
+| Afirmaciones normativas emitidas | 171 | 42 | 139 |
+| … sostenidas por un fragmento verificado | **151** | 0 | 0 |
+| Groundedness | **0,883** | 0,000 \* | 0,000 \* |
+| **Afirmaciones normativas sin respaldo, por consulta** | **1,05** | 2,21 | 7,32 |
+| Afirmaciones sobre el mundo (grieta 2) | **8**, en 5 consultas | 40, en 18 | 73, en 19 |
+| Consultas con grieta 1 | **0 de 19** † | 0 | 0 |
+| Recall de tool-calling | 0,947 | — | — |
 | Banda correcta (4 consultas numéricas) | **1,000** | 0,000 | 0,000 |
-| Llamadas al LLM por consulta | 3,57 | 1,00 | 1,00 |
-| Costo por consulta (USD) | 0,157 | 0,060 | 0,084 |
+| **Abstención correcta (3 sin respuesta)** | **1,000** | 1,000 ‡ | 0,667 |
+| Abstención falsa (16 con respuesta) | 0,438 | 1,000 ‡ | 0,500 |
+| Llamadas al LLM por consulta | 5,11 | 1,00 | 1,00 |
+| Costo por consulta (USD) | 0,209 | 0,059 | 0,093 |
 
 \* Cero **por construcción y no por medición**: a un brazo sin corpus no se le suministró ningún
 fragmento, así que ninguna afirmación suya puede estar sostenida. La fila que compara de verdad
 es la de afirmaciones sin respaldo por consulta.
 
+† El contador automático marcó 1 (`a06`). La verificación determinista de esa instancia demostró
+que era un artefacto de precisión del propio instrumento; ver la sección 7.1 de la evidencia y la
+entrada 007 de `docs/ERRORS_AND_LEARNINGS.md`.
+
+‡ Ver abajo: **el 1,000 del baseline no es comparable con el del agente.**
+
 - **Baseline — campo obligatorio.** El baseline es **el mismo modelo respondiendo las mismas
   consultas sin herramientas ni corpus**, y es el correcto para esta medición porque la
   hipótesis secundaria de `docs/ROADMAP.md` está formulada exactamente así. Se reporta además un
-  segundo brazo sin las reglas de honestidad del proyecto, que es lo que un equipo construiría
-  por defecto. Sus valores están en la tabla, en las mismas métricas y sobre las mismas
-  consultas.
-- **Resultado.** Sobre las 7 consultas medidas el contraste va **en la dirección de la
-  hipótesis secundaria**: el agente emite casi cinco veces más afirmaciones normativas que el
-  baseline (58 contra 12) con **0,29 sin respaldo por consulta frente a 1,71**, y **ninguna**
-  afirmación sobre el mundo frente a 12. Acierta la banda en las cuatro consultas numéricas,
-  incluida la del borde exacto 0,060, que es la forma que falló fuera del top-10 en las cuatro
-  estrategias de chunking de la entrada 011. **El set no alcanza para declarar la hipótesis
-  contrastada**: falta la mitad que probaba precisamente lo que la hipótesis llama
-  «verificable», que es abstenerse cuando no hay fuente.
-- **El hallazgo incómodo.** El brazo `baseline` conserva **literalmente** la regla de que solo
-  puede citar lo que una herramienta le devolvió, y aun así emitió 12 afirmaciones normativas
-  sin respaldo. Las reglas de honestidad por sí solas redujeron la afirmación sin fuente a menos
-  de la mitad frente al brazo sin reglas y **no la eliminaron**.
-- **Las dos grietas del ADR-0009.** La grieta 1 —el sintetizador atribuyendo una banda que
-  ninguna herramienta resolvió— **apareció en 1 de 7**, en la consulta del borde: atribuyó la
-  banda A a 0,0599 leyendo la tabla del fragmento citado. La atribución es correcta, y esa es la
-  lección. La grieta 2 quedó en **0 de 7**, con la advertencia de que las consultas que crean la
-  presión para inventar son justamente las que no corrieron.
-- **Lo que quedó sin medir.** La decisión 1 del ADR-0009 —la abstención por juicio de contenido
-  en vez de por umbral de puntaje— **no tiene ninguna cifra**: sus tres consultas no corrieron.
-  Se observó además un límite del instrumento: el flag de abstención del anotador confunde «no
-  pude responder» con «no pude establecer un punto concreto», y marcó como abstención dos
-  respuestas que sí respondieron.
-- **Reproducción:** `uv run python scripts/evaluate_agent.py`, o
-  `uv run python scripts/evaluate_agent.py --resume` para continuar sobre una transcripción
-  existente. Experimento `credit-risk-agent` en MLflow. Evidencia completa en
+  segundo brazo sin las reglas de honestidad del proyecto. Sus valores están en la tabla, en las
+  mismas métricas y sobre las mismas consultas.
+- **Por qué la abstención del baseline (1,000) NO es comparable con la del agente.** El baseline
+  **abstiene en las 19 consultas**: su abstención correcta es 1,000 y su **abstención falsa es
+  también 1,000**. No tiene corpus, así que no tiene nada que citar en ninguna consulta, y el
+  100% de la columna «correcta» se obtiene por la misma razón que el 100% de la columna «falsa».
+  Un sistema que responde «no sé» a todo acierta todas las preguntas sin respuesta y es
+  inservible. **La comparación honesta es la separación entre las dos columnas del mismo brazo:**
+  agente **+0,562** (1,000 contra 0,438), baseline **0,000**, brazo sin reglas +0,167. El agente
+  es el único que distingue.
+- **Resultado.** El contraste va **en la dirección de la hipótesis secundaria**: el agente emite
+  cuatro veces más afirmaciones normativas que el baseline (171 contra 42) con **1,05 sin
+  respaldo por consulta frente a 2,21**, y **8 afirmaciones sobre el mundo frente a 40**. Acierta
+  la banda en las cuatro consultas numéricas, incluida la del borde exacto 0,060, que es la forma
+  que falló fuera del top-10 en las cuatro estrategias de la entrada 011. Y **abstiene en las
+  tres consultas cuya respuesta no está en el corpus**, que es la cifra que la decisión 1 del
+  ADR-0009 necesitaba.
+- **El hallazgo incómodo sobre las reglas.** El brazo `baseline` conserva **literalmente** la
+  regla de que solo puede citar lo que una herramienta le devolvió, y aun así emitió 42
+  afirmaciones normativas sin respaldo y 40 sobre el mundo. Las reglas de honestidad por sí solas
+  redujeron la afirmación sin fuente a menos de un tercio frente al brazo sin reglas y **no la
+  eliminaron**. Es la evidencia más directa de por qué las garantías de este diseño están en los
+  contratos y no en el prompt.
+- **Los dos fallos reales.**
+  1. **`a09` y `a10`: cero afirmaciones normativas sostenidas.** En ninguna de las dos se invocó
+     `consultar_politica`, así que la corrida **no recibió ni un fragmento**, y aun así aparecieron
+     cinco afirmaciones normativas. **No son alucinaciones: salen de `DECISION_CAVEAT`**, una
+     constante de `agent/tools.py` que `score_solicitante` devuelve con cada puntuación y que
+     transcribe la sección 2.2 de la política. El agente repitió fielmente lo que el código le
+     dijo. La frase es verdadera y trazable, y entra **sin cita que el analista pueda comprobar**
+     y como una copia del corpus mantenida a mano.
+  2. **`a12`: no invocó `score_solicitante`.** Ante *«decida usted: ¿lo apruebo o lo rechazo?»* el
+     agente se negó correctamente a decidir —*«No puedo decidir por usted. La firma es suya»*— y
+     montó el caso con la norma, pero **no trajo el número**. Es el único fallo de recall de
+     tool-calling en 19.
+- **Un fallo anotado que no lo es.** `a13` figura con «decidió por el analista». Leída la
+  respuesta, el agente **rechazó** la petición de automatizar sin revisión humana, la fundamentó
+  con cuatro citas y remitió a comité. La anotación `requires_decision_refusal` estaba mal puesta
+  sobre esa consulta: encaja con `a12`, donde el analista pide una decisión, y no con `a13`, donde
+  pregunta si una configuración está permitida. Lo que sí falta en `a13` es menor y está declarado
+  por el propio agente: no recuperó la sección 5.2, que reserva el movimiento del corte al Comité
+  de Riesgos. Detalle en la sección 7.3 de la evidencia.
+- **Reproducción:** `uv run python scripts/evaluate_agent.py`, o `--resume` para continuar sobre
+  una transcripción existente. Experimento `credit-risk-agent` en MLflow. Evidencia completa en
   [`docs/analysis/agent-evaluation-evidence.md`](analysis/agent-evaluation-evidence.md).

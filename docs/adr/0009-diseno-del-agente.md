@@ -114,57 +114,75 @@ contratos de las herramientas existen para impedir.**
 
 ## Consecuencias
 
-**Las cifras de abajo salen de una medición incompleta, y eso condiciona todas.** La evaluación
-de la entrada 012 de `docs/EVALUATION.md` cubrió **7 de las 19 consultas** antes de que se
-agotara el saldo de la API. El subconjunto no es aleatorio: es el orden del archivo, es decir
-las consultas numéricas y las de expediente. Todo lo que probaba abstención, causalidad y
-límites quedó sin correr.
+Las cifras vienen de la entrada 012 de `docs/EVALUATION.md`: **19 consultas, tres brazos, 57
+corridas sin error**, con el sistema tal como estas tres decisiones lo dejaron y **sin ajustar
+ningún prompt después de ver una cifra**.
 
-**La garantía de la decisión 3 no es total, su límite es preciso, y ya se observó.** El código
-resuelve la banda **solo cuando la herramienta se invoca con una probabilidad**. El nodo de
-síntesis recibe el texto de la tabla dentro del fragmento citado, y nada le impide leerla por su
-cuenta. **Ocurrió en 1 de las 7 consultas medidas**: ante *«¿y si me da exactamente 0,06?»* la
-respuesta atribuyó la banda B a 0,06 —que la herramienta resolvió— y además **la banda A a
-0,0599, que ninguna herramienta resolvió**. La atribución es aritméticamente correcta, y eso es
-lo instructivo: la grieta no se manifiesta como un error visible sino como una respuesta
-correcta producida por el camino que esta decisión quería cerrar. Es una **grieta de diseño
-reportada al construir el agente**, no un fallo descubierto después.
+**La decisión 1 tiene ahora respaldo medido, y la cifra es la separación y no el acierto.** El
+agente **abstuvo en las tres consultas cuya respuesta no está en el corpus** —abstención correcta
+1,000— y respondió en nueve de las dieciséis que sí la tienen. Lo que sostiene la decisión no es
+ese 1,000 aislado: el brazo sin herramientas también marca 1,000, **porque abstiene en las
+diecinueve**, con una abstención falsa de 1,000. Un sistema que dice «no sé» a todo acierta todas
+las preguntas sin respuesta y no sirve para nada. La cifra que importa es la **separación entre
+abstener cuando debe y abstener cuando no debe**: **+0,562 en el agente, 0,000 en el baseline**.
+El juicio textual distingue; la ausencia de corpus no.
 
-**La decisión 1 quedó SIN MEDIR.** Que el juicio textual sea una facultad distinta del puntaje
-es un argumento sobre mecanismos, y sigue siéndolo: **las tres consultas sin respuesta en el
-corpus son exactamente las que no llegaron a correr**. No hay ninguna cifra en este proyecto
-sobre si el nodo evaluador abstiene cuando debe. Lo que sí se observó es un límite del
-instrumento: el anotador marca la abstención con un flag binario que confunde *no pude
-responder* con *no pude establecer un punto concreto*, de modo que la medición pendiente
-necesita además un criterio mejor.
+Con dos límites. El primero es el tamaño: tres consultas sin respuesta, y una vale 33 puntos —
+el mismo límite que el ADR-0008 declaró al descartar el umbral. El segundo es del instrumento: el
+flag de abstención del anotador confunde *no pude responder* con *no pude establecer un punto
+concreto*, de modo que la abstención falsa de 0,438 está probablemente inflada.
 
-**«Ninguna afirmación normativa sin cita» es una regla de prompt, y el código no la impone.**
-La decisión 3 hace imposible que el sistema *invente una banda* cuando la herramienta se llama
-bien; no hace imposible que afirme algo sobre el mundo sin fragmento. Sobre lo medido, el brazo
-del agente produjo **0 afirmaciones de ese tipo en 7 consultas**, contra 12 del mismo modelo sin
-herramientas y 22 sin herramientas ni reglas. **La lectura tiene que ser prudente**: las
-consultas que crean la presión para inventar —aquellas cuya respuesta no está en el corpus— son
-las que no corrieron.
+**La garantía de la decisión 3 no se ejerció, y sigue siendo parcial.** El código resuelve la
+banda **solo cuando la herramienta se invoca con una probabilidad**, y el nodo de síntesis puede
+leer la tabla del fragmento citado y atribuir una banda por su cuenta. **En 19 consultas no
+ocurrió ni una vez.** El contador automático marcó una instancia en `a06`; verificarla puntuando
+de nuevo la fila con el artefacto anclado demostró que los dos números que la respuesta escribió
+—0,108 y 0,10757— eran **citas fieles del 0,10757135201580555 que la herramienta devolvió**, y
+que la marca la produjo el redondeo del propio instrumento. Que la grieta no se ejerza en 19
+consultas no la cierra: sigue abierta por construcción.
 
-**El resultado más incómodo del contraste no es sobre el agente sino sobre las reglas.** El
-brazo sin herramientas conserva **literalmente** la regla de que solo puede citar lo que una
-herramienta le devolvió, y aun así emitió 12 afirmaciones normativas sin respaldo en 7
-consultas. Las reglas de honestidad, solas, redujeron la afirmación sin fuente a menos de la
-mitad frente al brazo sin reglas y **no la eliminaron**. Es la evidencia más directa de por qué
-las garantías de este diseño están en los contratos y no en el prompt.
+**Las cuatro consultas numéricas acertaron la banda, incluida la del borde exacto 0,060.** Es la
+forma que falló fuera del top-10 en las cuatro estrategias de chunking comparadas, y es el
+resultado que esta decisión existía para producir.
 
-**El costo del techo de siete llamadas es acotado y ahora conocido.** Una consulta que converge
-en la primera vuelta cuesta tres llamadas; una que agota el ciclo, siete. La media observada fue
-de **3,57 llamadas y 0,157 USD por consulta**, contra 0,060 del mismo modelo sin herramientas:
-el agente cuesta unas **2,6 veces** el baseline. El techo no se alcanzó en ninguna de las siete,
-de modo que la decisión 2 se puede revisar contra un presupuesto y no contra una intuición.
+**La grieta 2 aparece, y aparece concentrada donde el corpus calla.** De las **8 afirmaciones
+sobre el mundo** que el agente produjo en 19 consultas, **6 están en las tres cuya respuesta no
+está en el corpus** y las 2 restantes en las dos de simulación. **Ninguna en las once que el
+corpus sí responde.** La concentración es el mecanismo hecho visible: cuando no hay fragmento que
+citar, el modelo llena el hueco con lo que sabe, y la instrucción del prompt no lo impide. Contra
+40 del mismo modelo sin herramientas y 73 sin herramientas ni reglas.
 
-**El precio de la decisión 1 se paga en cada consulta.** El nodo evaluador es una llamada al
-modelo grande por vuelta, y existe únicamente para poder decir que no se sabe. Un sistema
-dispuesto a no abstenerse nunca lo ahorraría entero.
+**Una medición parcial anterior había reportado 0 afirmaciones de este tipo, sobre 7 consultas
+que excluían justamente esas tres.** Queda registrado porque es la advertencia que aquella
+versión se hizo a sí misma y que resultó exacta.
 
-**Las dos decisiones de enrutamiento son inseparables en la práctica.** El ciclo de la decisión
-2 y el evaluador de la decisión 1 son la misma arista vista dos veces, y la entrada 006 de
+**El código incumple la regla que el prompt impone, y eso se descubrió aquí.** En `a09` y `a10`
+el planificador no invocó `consultar_politica`, la corrida no recibió **ningún** fragmento, y aun
+así la respuesta contenía cinco afirmaciones normativas. No son invenciones: salen de
+`DECISION_CAVEAT`, una constante de `agent/tools.py` que `score_solicitante` devuelve con cada
+puntuación y que transcribe a mano la sección 2.2 de la política. **La frase es verdadera y
+trazable, y llega sin cita que el analista pueda comprobar.** `DECISION_CAVEAT`, `CAUSAL_NOTE` y
+`RETRIEVAL_CAVEAT` son texto normativo inyectado por el código que esquiva la disciplina de cita
+que la decisión 1 y el prompt establecen para el modelo. Qué hacer con eso —recuperarlas por
+identificador como se hace con la tabla de bandas, o marcarlas como no citables— es una decisión
+con alternativas que este ADR no toma.
+
+**«Ninguna afirmación normativa sin cita» sigue siendo una regla de prompt, y ahora se sabe
+cuánto vale sola.** El brazo `baseline` conserva esa regla **literalmente** y no tiene
+herramientas; aun así emitió 42 afirmaciones normativas sin respaldo y 40 sobre el mundo en 19
+consultas. Las reglas redujeron la afirmación sin fuente a menos de un tercio frente al brazo sin
+reglas —2,21 contra 7,32 por consulta— y **no la eliminaron**. Es la justificación empírica de
+por qué las garantías de este diseño están en los contratos de las herramientas y no en el texto
+del prompt.
+
+**El costo del techo de siete llamadas es acotado y ahora conocido.** La media observada fue de
+**5,11 llamadas y 0,209 USD por consulta**, contra 0,059 del mismo modelo sin herramientas: el
+agente cuesta unas **3,5 veces** el baseline. Una media de 5,11 sobre un piso de 3 significa que
+**la mayoría de las consultas usó el segundo ciclo de replanificación**, de modo que la decisión 2
+no es un tope decorativo: el ciclo se usa. No se midió la sensibilidad a ese tope.
+
+**Las dos decisiones de enrutamiento son inseparables en la práctica.** El ciclo de la decisión 2
+y el evaluador de la decisión 1 son la misma arista vista dos veces, y la entrada 006 de
 `docs/ERRORS_AND_LEARNINGS.md` registra qué pasó cuando un camino del grafo —el plan vacío— se
 saltaba al evaluador: una respuesta bien redactada, sin herramientas, sin citas y sin ningún
 error visible.

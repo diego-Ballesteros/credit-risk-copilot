@@ -237,3 +237,16 @@ def test_a_band_asserted_with_no_tool_result_at_all_is_a_crack():
 def test_an_answer_that_assigns_no_band_is_not_a_crack():
     detect = _evaluate_agent_module().detect_crack_one
     assert detect(set(), [(0.19, "D")]) is False
+
+
+def test_a_quote_more_precise_than_the_stored_value_is_not_a_crack():
+    # The third false positive from the same root cause, and the reason the transcript now
+    # stores probabilities at full precision. The tool resolved 0.10757135201580555 and the
+    # answer quoted it as both 0,108 and 0,10757. Against a value stored rounded to four
+    # decimals the five-decimal quote could not be confirmed, and the detector reported a
+    # crack that was the agent quoting the tool faithfully.
+    detect = _evaluate_agent_module().detect_crack_one
+    true_value = 0.10757135201580555
+    assert detect({(0.10757, "B"), (0.108, "B")}, [(true_value, "B")]) is False
+    # Against the rounded value it cannot be confirmed, which is what went wrong.
+    assert detect({(0.10757, "B")}, [(0.1076, "B")]) is True

@@ -506,7 +506,12 @@ def _fragments_and_bands(
         if isinstance(band, dict) and band.get("code"):
             probability = band.get("probability_of_default")
             if isinstance(probability, (int, float)):
-                assignments.add((round(float(probability), 4), str(band["code"])))
+                # Stored at full precision, deliberately. Rounding here is what made the
+                # crack-1 detector report a crack in `a06`: the tool resolved
+                # 0.10757135201580555, the answer quoted it back as 0,10757, and a value
+                # stored as 0,1076 could no longer confirm the quote. **The instrument must
+                # not be less precise than the thing it is checking.**
+                assignments.add((float(probability), str(band["code"])))
         for key in ("band_fragment", "fragments"):
             value = record.result.get(key)
             entries = value if isinstance(value, list) else [value]
