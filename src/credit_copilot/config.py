@@ -107,6 +107,18 @@ class Settings(BaseSettings):
         return self.data_dir / "corpus"
 
     @property
+    def eval_dir(self) -> Path:
+        """Directory for hand-annotated evaluation sets.
+
+        Versioned in git like `data/corpus/`, and for the same reason: the annotations
+        were made by hand, and without them no retrieval measurement is reproducible.
+
+        Returns:
+            Absolute path to `data/eval/`.
+        """
+        return self.data_dir / "eval"
+
+    @property
     def vector_store_dir(self) -> Path:
         """Directory for the persistent ChromaDB index built from `data/corpus/`.
 

@@ -383,9 +383,9 @@ Un *holdout* que nunca vio el entrenamiento se convierte en un flujo de peticion
 | Tracking | **MLflow + DagsHub** | Registry incluido |
 | Orquestación GenAI | **LangGraph** | Estado tipado + aristas condicionales |
 
-> **Sustitución de LightGBM, 2026-08-26.** LightGBM estaba en el stack y **no es utilizable
+> **Sustitución de LightGBM, 2026-08-26.** LightGBM estaba en el stack y **no era utilizable
 > en la máquina de desarrollo**. El paquete instala y su wheel trae `lib_lightgbm.dll`, pero
-> cargarla requiere el runtime de Microsoft Visual C++, y este sistema solo tiene las
+> cargarla requiere el runtime de Microsoft Visual C++, y este sistema solo tenía las
 > variantes `*_clr0400` que empaqueta .NET. El fallo aparece al **importar**, no al
 > instalar: `uv add lightgbm` reporta éxito y `import lightgbm` lanza `FileNotFoundError`.
 >
@@ -394,13 +394,24 @@ Un *holdout* que nunca vio el entrenamiento se convierte en un flujo de peticion
 > está en la entrada 004 de `docs/EVALUATION.md`, y esa entrada deja explícito que **no dice
 > nada sobre LightGBM**.
 >
-> Revertirlo es instalar el runtime (`winget install Microsoft.VCRedist.2015+.x64`) y
-> cambiar el constructor en `models/estimators`. Se deja sin revertir porque el boosting
-> quedó por debajo del umbral de significancia práctica frente a la logística (+0,0163
-> contra 0,02) y por debajo del random forest, así que la sustitución no cambió qué modelo
-> se eligió.
+> **Actualización, 2026-08-30 — la limitación ya no existe, y la sustitución se mantiene.**
+> Durante la fase 3, `sentence-transformers` falló al importar `torch` por **este mismo
+> mecanismo**: la DLL presente, el runtime ausente. Se instaló
+> `winget install Microsoft.VCRedist.2015+.x64` y `import lightgbm` pasó a funcionar
+> (verificado: `lightgbm 4.7.0`). La afirmación negativa de arriba caducó y queda corregida
+> aquí en vez de borrada.
+>
+> **No se reejecuta la fase 2.** El boosting quedó por debajo del umbral de significancia
+> práctica frente a la logística (+0,0163 contra 0,02) y por debajo del random forest, así
+> que la sustitución no cambió qué modelo se eligió, y volver a medir movería un número
+> dentro del ruido. La decisión del **ADR-0007** sigue siendo válida con la evidencia que la
+> sustentó.
+>
+> La lección de fondo no es sobre LightGBM: **un fallo de carga de DLL nativa en esta máquina
+> es una clase de error, no un incidente**, y se repitió idéntico con `torch` cuatro días
+> después. Queda registrado en `docs/ERRORS_AND_LEARNINGS.md`.
 | Vector store | ChromaDB | Persistente en disco |
-| Embeddings | sentence-transformers | Modelo multilingüe (corpus en español) |
+| Embeddings | sentence-transformers | `intfloat/multilingual-e5-base`. **Corpus mayoritariamente en español, con un documento en inglés**: el BIS no publica versión oficial en español de BCBS 75, y traducirlo produciría un texto no citable, así que se indexa en su idioma original y el modelo multilingüe resuelve la consulta entre idiomas |
 | LLM | Anthropic API | `claude-haiku-4-5` para tools, modelo mayor para síntesis |
 | API | FastAPI + Pydantic | Validación estricta |
 | Testing | pytest, pytest-cov | Objetivo: >80% coverage |
@@ -450,7 +461,7 @@ credit-risk-copilot/
 │   ├── features/      builder · transformers
 │   ├── models/        train · evaluate · calibrate · registry
 │   ├── explain/       shap_service · counterfactual
-│   ├── rag/           ingest · chunking · vectorstore · retriever
+│   ├── rag/           documents · chunking · embeddings · vectorstore
 │   ├── agent/         graph · state · tools · prompts
 │   ├── api/           app · schemas · dependencies
 │   └── monitoring/    drift · metrics

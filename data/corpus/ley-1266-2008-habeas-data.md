@@ -8,7 +8,7 @@ is_synthetic: false
 source_url: http://www.secretariasenado.gov.co/senado/basedoc/ley_1266_2008.html
 retrieved_at: 2026-08-30
 status_note: Texto vigente, con las modificaciones introducidas por la Ley 2157 de 2021.
-scope_note: El artículo 13 corresponde al nuevo texto dado por el artículo 3 de la Ley 2157 de 2021. Extracto parcial. Se transcriben los artículos 4 (principios de la administración de datos), 6 (derechos de los titulares de la información) y 13 (permanencia de la información). El resto de la ley no se incluye. Del texto fuente se eliminaron los enlaces de navegación del compilador ("Jurisprudencia Vigencia", "Notas de Vigencia", "Legislación Anterior"); las anotaciones de exequibilidad y de modificación entre paréntesis angulares se conservan literalmente.
+scope_note: El artículo 13 corresponde al nuevo texto dado por el artículo 3 de la Ley 2157 de 2021. Extracto parcial. Se transcriben los artículos 4 (principios de la administración de datos), 6 (derechos de los titulares de la información), 13 (permanencia de la información) y 15 (acceso a la información por parte de los usuarios). El resto de la ley no se incluye. Del texto fuente se eliminaron los enlaces de navegación del compilador ("Jurisprudencia Vigencia", "Notas de Vigencia", "Legislación Anterior"); las anotaciones de exequibilidad y de modificación entre paréntesis angulares se conservan literalmente. El artículo 15 enumera cuatro finalidades y la fuente las presenta como párrafos sin numerar, con la primera dentro del inciso inicial; se transcriben tal como la fuente las entrega, sin añadirles numeración.
 ---
 
 ## Título I. Objeto, ámbito de aplicación y definiciones
@@ -104,3 +104,13 @@ En las obligaciones inferiores o iguales al (15%) de un (1) salario mínimo lega
 #### Parágrafo 3o. Actualización simultánea de calificaciones y scores
 
 Toda información negativa o desfavorable que se encuentre en bases de datos y se relacione con calificaciones, récord (scorings-score), o cualquier tipo de medición financiera, comercial o crediticia, deberá ser actualizada de manera simultánea con el retiro del dato negativo o con la cesación del hecho que generó la disminución de la medición.
+
+### Artículo 15. Acceso a la información por parte de los usuarios
+
+La información contenida en bancos de datos de información financiera, crediticia, comercial, de servicios y la proveniente de terceros países podrá ser accedida por los usuarios únicamente con las siguientes finalidades: Como elemento de análisis para establecer y mantener una relación contractual, cualquiera que sea su naturaleza, así como para la evaluación de los riesgos derivados de una relación contractual vigente.
+
+Como elemento de análisis para hacer estudios de mercado o investigaciones comerciales o estadísticas.
+
+Para el adelantamiento de cualquier trámite ante una autoridad pública o una persona privada, respecto del cual dicha información resulte pertinente.
+
+Para cualquier otra finalidad, diferente de las anteriores, respecto de la cual y en forma general o para cada caso particular se haya obtenido autorización por parte del titular de la información.

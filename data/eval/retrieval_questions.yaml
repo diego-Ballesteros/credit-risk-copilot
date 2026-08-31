@@ -1,0 +1,358 @@
+# Set de evaluación del retrieval — 29 preguntas anotadas a mano
+#
+# CÓMO SE CONSTRUYÓ, Y POR QUÉ ESE ORDEN IMPORTA
+# ----------------------------------------------
+# 1. Se enumeraron las TAREAS de un analista de crédito, no los contenidos del corpus:
+#    originar, decidir sobre un puntaje, sustentar una excepción, armar el expediente,
+#    saber cuándo escalar, responderle a un cliente por su reporte en centrales, y saber
+#    si puede consultar la central.
+# 2. Se redactó una pregunta por tarea, en el registro en que un analista habla: "puntaje"
+#    y no "score", "reporte negativo" y no "dato negativo", "la letra que se reporta" y no
+#    "categoría de riesgo", "que le puede afectar la plata" y no "que pueda afectar su
+#    capacidad de pago".
+# 3. SOLO DESPUÉS se abrió el inventario de unidades del corpus para anotar cuál las
+#    responde. La anotación se hizo contra la lista de encabezados y los primeros
+#    caracteres de cada unidad, NUNCA contra el resultado de una búsqueda: al momento de
+#    anotar no se había corrido ninguna consulta contra el índice.
+#
+# CÓMO SE VERIFICA QUE EL CONTROL FUNCIONÓ, EN VEZ DE CREERLO
+# ----------------------------------------------------------
+# `scripts/evaluate_retrieval.py` mide, para cada pregunta, el solapamiento léxico de
+# palabras de contenido entre la pregunta y el texto de su fragmento anotado. Si las
+# preguntas se hubieran redactado copiando el vocabulario de los chunks, ese número sería
+# alto y hit@k mediría la copia y no la recuperación. El número queda en el reporte.
+#
+# LÍMITE DECLARADO DE ESTE CONTROL
+# --------------------------------
+# La política interna la redactó el mismo autor que redacta estas preguntas, un turno
+# antes. Para las nueve preguntas de política el control es MÁS DÉBIL que para las de
+# normativa pública, porque no hay forma de desconocer un texto propio. La medición de
+# solapamiento se reporta separada por documento justamente para que esa debilidad sea
+# visible y no haya que confiar en la palabra de nadie.
+#
+# CONTRATO DEL ARCHIVO
+# --------------------
+# - `id`: identificador estable de la pregunta.
+# - `question`: la pregunta tal como la escribiría el analista.
+# - `expected_chunk_ids`: fragmentos que la responden. **Lista vacía = la pregunta no
+#   tiene respuesta en el corpus.** No hay campo `answerable` aparte: dos copias del mismo
+#   hecho divergen, y aquí la lista es la única fuente.
+# - `note`: por qué ese fragmento y no otro.
+# - `tags`: para desagregar los resultados.
+
+questions:
+
+  # =========================================================================
+  # NORMATIVA PÚBLICA — Circular Básica Contable y Financiera
+  # =========================================================================
+
+  - id: q01
+    question: "Antes de aprobarle un cupo a alguien, ¿en qué se supone que me tengo que basar?"
+    expected_chunk_ids:
+      - "circular-basica-contable-sfc-cap-ii::003-1-3-2-3-1-etapa-de-otorgamiento"
+    note: >-
+      El encabezado del numeral de otorgamiento es el que enuncia sobre qué debe basarse
+      el otorgamiento: conocimiento del sujeto de crédito, capacidad de pago y
+      características del contrato. Los literales que siguen desarrollan cada pieza.
+    tags: [normativa-publica, cbcf, otorgamiento]
+
+  - id: q02
+    question: "¿Qué le tengo que contar al cliente sobre el préstamo antes de que lo firme?"
+    expected_chunk_ids:
+      - "circular-basica-contable-sfc-cap-ii::004-a-informacion-previa-al-otorgamiento-de#01"
+      - "circular-basica-contable-sfc-cap-ii::004-a-informacion-previa-al-otorgamiento-de#02"
+    note: >-
+      El literal a del numeral de otorgamiento lista la información obligatoria previa a
+      la firma. Se anotan los dos fragmentos: el primero enuncia el deber y el segundo
+      trae la lista (tasa, base de capital, mora, comisiones, plazo, prepago, derechos).
+    tags: [normativa-publica, cbcf, otorgamiento]
+
+  - id: q03
+    question: "¿Cada cuánto hay que volver a revisar si las variables que usamos para decidir siguen sirviendo?"
+    expected_chunk_ids:
+      - "circular-basica-contable-sfc-cap-ii::005-b-seleccion-de-variables-y-segmentacion#01"
+      - "politica-interna-credito::017-6-1-revision-periodica-de-la-metodologia"
+    note: >-
+      Dos fragmentos correctos y es deliberado: la norma fija el mínimo (dos veces al año,
+      al cierre de mayo y noviembre) y la política interna lo recoge. Un analista que
+      pregunta esto se da por servido con cualquiera de los dos.
+    tags: [normativa-publica, politica-interna, cbcf, respuesta-multiple]
+
+  - id: q04
+    question: "Si el modelo interno me da una probabilidad, ¿cómo la convierto en la letra que se reporta a las centrales?"
+    expected_chunk_ids:
+      - "circular-basica-contable-sfc-cap-ii::009-a-homologacion-de-las-probabilidades-de"
+    note: >-
+      Es la tabla de homologación de probabilidad de incumplimiento a categorías AA..E por
+      modalidad de cartera. Segundo caso tabular del corpus, junto con la tabla de bandas
+      de la política, y por eso interesa aparte.
+    tags: [normativa-publica, cbcf, tabular]
+
+  - id: q05
+    question: "Me entero de que a un cliente le abrieron un proceso judicial que le puede afectar la plata. ¿Tengo que hacer algo?"
+    expected_chunk_ids:
+      - "circular-basica-contable-sfc-cap-ii::013-2-2-3-3-procesos-concursales-judiciales"
+    note: >-
+      Obliga a evaluar y recalificar, y a dejar documentado el resultado a disposición de
+      la SFC. La política interna también lo menciona como causal de invalidación del
+      puntaje, pero el deber de recalificar solo está en la norma.
+    tags: [normativa-publica, cbcf, calificacion]
+
+  - id: q06
+    question: "Le vamos a prestar a una persona natural para que compre electrodomésticos. ¿En qué modalidad de cartera cae eso?"
+    expected_chunk_ids:
+      - "circular-basica-contable-sfc-cap-ii::007-2-1-2-creditos-de-consumo"
+    note: >-
+      La definición de crédito de consumo: otorgado a personas naturales para adquirir
+      bienes de consumo con fines no comerciales, distinto del microcrédito. La pregunta
+      evita a propósito decir "consumo", que es la palabra que se busca.
+    tags: [normativa-publica, cbcf, definiciones]
+
+  # =========================================================================
+  # NORMATIVA PÚBLICA — Ley 1266 de 2008
+  # =========================================================================
+
+  - id: q07
+    question: "El cliente ya pagó todo lo que debía. ¿Cuánto tiempo más le va a seguir apareciendo el reporte negativo?"
+    expected_chunk_ids:
+      - "ley-1266-2008-habeas-data::012-articulo-13-permanencia-de-la-informacio"
+    note: >-
+      El inciso del artículo 13 fija el término en el doble del tiempo de mora, con tope
+      de cuatro años contados desde el pago. Es la pregunta que más le hacen a un analista
+      en ventanilla.
+    tags: [normativa-publica, ley-1266, habeas-data]
+
+  - id: q08
+    question: "¿Hay un tope de años para que una deuda vieja desaparezca del reporte aunque nunca la hayan pagado?"
+    expected_chunk_ids:
+      - "ley-1266-2008-habeas-data::013-paragrafo-1o-caducidad-del-dato-negativo"
+    note: >-
+      El parágrafo 1 fija ocho años desde que la obligación entra en mora, y es una regla
+      distinta de la del inciso principal, que cuenta desde el pago. La pregunta separa
+      los dos casos a propósito, porque confundirlos es el error típico.
+    tags: [normativa-publica, ley-1266, habeas-data]
+
+  - id: q09
+    question: "A un cliente ya le borraron el reporte negativo pero su puntaje sigue castigado. ¿Eso está bien?"
+    expected_chunk_ids:
+      - "ley-1266-2008-habeas-data::015-paragrafo-3o-actualizacion-simultanea-de"
+      - "politica-interna-credito::021-7-2-actualizacion-de-calificaciones-y-sc"
+    note: >-
+      No está bien: el parágrafo 3 exige que la calificación o el score se actualicen de
+      manera simultánea al retiro del dato negativo. La política interna lo traduce a una
+      obligación de recalcular. Ambos fragmentos responden.
+    tags: [normativa-publica, politica-interna, ley-1266, respuesta-multiple]
+
+  - id: q10
+    question: "¿Puedo consultar la central de riesgo para estudiar a un solicitante, o necesito que él me firme una autorización?"
+    expected_chunk_ids:
+      - "ley-1266-2008-habeas-data::016-articulo-15-acceso-a-la-informacion-por"
+      - "ley-1266-2008-habeas-data::009-1-frente-a-los-operadores-de-los-bancos#02"
+    note: >-
+      El artículo 15 habilita el acceso como elemento de análisis para establecer una
+      relación contractual y para evaluar riesgos; el parágrafo del numeral 1 del artículo
+      6 aclara que el dato financiero no requiere autorización del titular. La pregunta es
+      la que motivó agregar el artículo 15 al corpus.
+    tags: [normativa-publica, ley-1266, habeas-data, respuesta-multiple]
+
+  - id: q11
+    question: "Un cliente reclama que lo que tienen registrado de él está incompleto y lo deja mal parado. ¿Qué lo respalda?"
+    expected_chunk_ids:
+      - "ley-1266-2008-habeas-data::001-a-principio-de-veracidad-o-calidad-de-lo"
+    note: >-
+      El principio de veracidad exige información veraz, completa, exacta, actualizada,
+      comprobable y comprensible, y prohíbe el registro de datos parciales o fraccionados.
+    tags: [normativa-publica, ley-1266, habeas-data]
+
+  - id: q12
+    question: "¿La información que sacamos de la central se puede usar para armar una campaña comercial?"
+    expected_chunk_ids:
+      - "ley-1266-2008-habeas-data::016-articulo-15-acceso-a-la-informacion-por"
+      - "ley-1266-2008-habeas-data::002-b-principio-de-finalidad"
+    note: >-
+      Pregunta con trampa deliberada. El artículo 15 sí admite el uso como elemento de
+      análisis para estudios de mercado o investigaciones comerciales, y el principio de
+      finalidad es el que acota el alcance. Quien responda solo "no, por finalidad" se
+      queda corto.
+    tags: [normativa-publica, ley-1266, habeas-data, respuesta-multiple]
+
+  - id: q13
+    question: "Un cliente quiere saber quiénes han estado mirando su información. ¿Tiene derecho a que se lo digan?"
+    expected_chunk_ids:
+      - "ley-1266-2008-habeas-data::009-1-frente-a-los-operadores-de-los-bancos#01"
+    note: >-
+      El numeral 1.4 del artículo 6 le da al titular el derecho a solicitar información
+      acerca de los usuarios autorizados para obtener información.
+    tags: [normativa-publica, ley-1266, habeas-data]
+
+  # =========================================================================
+  # CROSS-LINGUAL — preguntas en español, respuesta en el documento en inglés
+  # =========================================================================
+
+  - id: q14
+    question: "¿Quién debería confirmar la calificación de riesgo de un crédito: el mismo que lo originó u otra área?"
+    expected_chunk_ids:
+      - "basilea-principios-riesgo-credito::020-paragraph-60-periodic-review-and-indepen"
+    note: >-
+      Otra área. El párrafo 60 exige que la responsabilidad de fijar o confirmar la
+      calificación recaiga en una función de revisión independiente de la que originó el
+      crédito. Respuesta en inglés a una pregunta en español.
+    tags: [cross-lingual, basilea, calificacion]
+
+  - id: q15
+    question: "¿Sirve de algo tener muchos escalones en la escala de calificación interna, o basta con distinguir bueno y malo?"
+    expected_chunk_ids:
+      - "basilea-principios-riesgo-credito::018-paragraph-58-gradations-of-the-rating-sc"
+    note: >-
+      El párrafo 58 dice que los sistemas más útiles tienen numerosas gradaciones dentro
+      de lo que se considera satisfactorio, precisamente para diferenciar riesgo relativo.
+      Respuesta en inglés a una pregunta en español.
+    tags: [cross-lingual, basilea, calificacion]
+
+  - id: q16
+    question: "Si la garantía es muy buena, ¿puedo ser menos exigente con el análisis del deudor?"
+    expected_chunk_ids:
+      - "basilea-principios-riesgo-credito::008-paragraph-34-collateral-is-not-a-substit#01"
+    note: >-
+      No. El párrafo 34 es explícito: la garantía no puede sustituir una evaluación
+      completa del deudor ni compensar información insuficiente. Respuesta en inglés a una
+      pregunta en español.
+    tags: [cross-lingual, basilea, otorgamiento]
+
+  - id: q17
+    question: "¿Tiene que quedar rastro de quién aprobó un crédito y con qué análisis?"
+    expected_chunk_ids:
+      - "basilea-principios-riesgo-credito::013-paragraph-43-formal-evaluation-approval"
+      - "politica-interna-credito::016-5-3-quorum-y-registro"
+    note: >-
+      El párrafo 43 exige una traza de auditoría clara que identifique a quien aportó el
+      análisis y a quien tomó la decisión; la política interna lo recoge para los comités.
+      Cross-lingual con respaldo también en español.
+    tags: [cross-lingual, politica-interna, basilea, respuesta-multiple]
+
+  # =========================================================================
+  # POLÍTICA INTERNA — incluidas las preguntas numéricas
+  # =========================================================================
+
+  - id: q18
+    question: "El puntaje me dio 0,19. ¿Qué hago con esa solicitud?"
+    expected_chunk_ids:
+      - "politica-interna-credito::005-2-1-tabla-de-bandas"
+    note: >-
+      Banda D: se rechaza salvo excepción documentada. Es EL caso que falló en el turno
+      anterior y la razón de ser de este set. La respuesta exige evaluar si 0,19 cae
+      dentro de [0,160 ; 0,300), que es justo lo que un recuperador denso no hace.
+    tags: [politica-interna, numerica]
+
+  - id: q19
+    question: "Un solicitante quedó en 0,42. ¿Lo puedo mandar a comité para que lo aprueben?"
+    expected_chunk_ids:
+      - "politica-interna-credito::005-2-1-tabla-de-bandas"
+      - "politica-interna-credito::008-3-1-donde-cabe-una-excepcion"
+    note: >-
+      No. 0,42 es banda E, que no admite excepción, y la sección de excepciones lo dice
+      explícitamente. Comprueba si el sistema distingue dos bandas distintas por su número.
+    tags: [politica-interna, numerica, respuesta-multiple]
+
+  - id: q20
+    question: "Me salió 0,13 en un solicitante. ¿Se le aprueba lo que pidió o con algún ajuste?"
+    expected_chunk_ids:
+      - "politica-interna-credito::005-2-1-tabla-de-bandas"
+    note: >-
+      Banda C: se aprueba con cupo reducido al 60% del solicitado y seguimiento mensual.
+      0,13 está por debajo del umbral operativo, así que quien solo compare contra 0,160
+      contesta "aprobar" y se pierde el ajuste.
+    tags: [politica-interna, numerica]
+
+  - id: q21
+    question: "¿A partir de qué número se rechaza una solicitud?"
+    expected_chunk_ids:
+      - "politica-interna-credito::003-1-2-el-umbral-operativo-y-el-supuesto-qu"
+      - "politica-interna-credito::005-2-1-tabla-de-bandas"
+    note: >-
+      0,160. Es la pregunta numérica formulada al revés: en vez de dar un valor y pedir la
+      decisión, pide el corte. Sirve para separar si lo que falla es localizar el umbral o
+      evaluar la desigualdad.
+    tags: [politica-interna, numerica, respuesta-multiple]
+
+  - id: q22
+    question: "El cliente lleva diez años con nosotros y nunca falló. ¿Eso alcanza para aprobarle pese al puntaje?"
+    expected_chunk_ids:
+      - "politica-interna-credito::009-3-2-criterios-de-excepcion"
+    note: >-
+      No alcanza. Los criterios de excepción dicen expresamente que ninguno puede
+      sustituirse por la antigüedad de la relación comercial ni por la referencia de un
+      funcionario.
+    tags: [politica-interna, excepciones]
+
+  - id: q23
+    question: "El analista quiere aprobar a alguien que el modelo marcó como riesgoso. ¿Puede decidirlo él solo?"
+    expected_chunk_ids:
+      - "politica-interna-credito::014-5-1-que-escala-al-comite-de-credito"
+    note: >-
+      No. Toda discrepancia entre el concepto del analista y la banda del modelo, en
+      cualquier dirección, escala al Comité de Crédito.
+    tags: [politica-interna, escalamiento]
+
+  - id: q24
+    question: "Llegó una solicitud con campos vacíos en el historial de pagos. ¿Los lleno con cero?"
+    expected_chunk_ids:
+      - "politica-interna-credito::007-2-3-que-invalida-el-score"
+    note: >-
+      No: el puntaje no se usa y el caso pasa a evaluación manual. La política es explícita
+      en que un cero significa "no debe nada" y un faltante significa "no sabemos".
+    tags: [politica-interna, calidad-de-datos]
+
+  - id: q25
+    question: "¿Qué tengo que dejar guardado en el expediente cuando la decisión se apoyó en el modelo?"
+    expected_chunk_ids:
+      - "politica-interna-credito::012-4-2-documentacion-especifica-de-la-decis"
+    note: >-
+      La probabilidad con cuatro decimales, el nombre y versión del modelo, el umbral
+      vigente, las cinco variables de mayor contribución, la banda y, si hubo, el criterio
+      de excepción.
+    tags: [politica-interna, documentacion]
+
+  - id: q26
+    question: "¿Le puedo decir al cliente que si baja el uso de su cupo va a dejar de incumplir?"
+    expected_chunk_ids:
+      - "politica-interna-credito::013-4-3-lo-que-la-explicacion-del-modelo-no"
+    note: >-
+      No. Se puede afirmar qué estimaría el modelo bajo otro valor de la variable; no se
+      puede afirmar que el cambio produzca el efecto en el mundo. Es la distinción
+      causal/asociacional que el proyecto sostiene desde el Model Card.
+    tags: [politica-interna, explicabilidad]
+
+  # =========================================================================
+  # SIN RESPUESTA EN EL CORPUS — para poder medir si un umbral de corte es viable
+  # =========================================================================
+  # Son tres y no una a propósito: con un solo caso no se puede decir nada sobre la
+  # distribución del mejor score de una pregunta sin respuesta, y la viabilidad de un
+  # umbral es exactamente una afirmación sobre esa distribución.
+
+  - id: q27
+    question: "¿Cuál es la tasa de usura vigente para crédito de consumo este trimestre?"
+    expected_chunk_ids: []
+    note: >-
+      No está en el corpus. La certifica la Superintendencia Financiera por resolución
+      trimestral, que no es ninguno de los cuatro documentos. El corpus sí habla de tasas
+      de interés en el literal a del otorgamiento, así que es una trampa cercana.
+    tags: [sin-respuesta]
+
+  - id: q28
+    question: "¿Qué porcentaje de provisión debo constituir para un crédito calificado en categoría C?"
+    expected_chunk_ids: []
+    note: >-
+      No está en el corpus. Las tablas de provisiones viven en los numerales 1.3.4 y en
+      los anexos del Capítulo II, que no se transcribieron. La trampa es cercana porque el
+      corpus sí trae las categorías AA..E y menciona provisiones en general.
+    tags: [sin-respuesta]
+
+  - id: q29
+    question: "¿Cuántos clientes de nuestra cartera están hoy con mora mayor a 90 días?"
+    expected_chunk_ids: []
+    note: >-
+      No está en el corpus ni puede estarlo: es un dato operativo de la entidad, no una
+      norma. Sirve para ver si el recuperador distingue una pregunta sobre reglas de una
+      pregunta sobre hechos.
+    tags: [sin-respuesta]
