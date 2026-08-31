@@ -34,6 +34,16 @@ without its source is the failure this whole phase exists to avoid, and a citati
 be empty is one that will be. `RetrievedFragment.citation` has a minimum length, so a
 fragment without one cannot be constructed at all.
 
+**Where the applicant contract and the decision vocabulary live now.** `ApplicantRecord`,
+the operating threshold and the sentences that travel with a probability - `COST_ASSUMPTION`,
+`DECISION_CAVEAT`, `CAUSAL_NOTE`, `DIRECTION_NOTE` - are defined in `models/applicant.py` and
+`models/decision.py`, and imported here. They used to be defined in this module, and moving
+them changed no text and no behaviour: they are re-exported under the same names, so every
+importer of `agent.tools` still reads them from here. The reason is the two-service
+deployment - the service that serves the model must validate an applicant and report a
+threshold without importing `anthropic`, `chromadb` or the embedding stack, all three of
+which this module pulls in.
+
 **Why the heavy objects are injected.** `ToolContext` holds the scorer, the explainer and the
 retriever behind protocols. In production `build_tool_context` fills it with the pinned
 registry artefact, a SHAP explainer over its forest, and the persistent Chroma index. In
@@ -49,14 +59,23 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 from anthropic.types import ToolParam
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from credit_copilot.agent.state import Citation
 from credit_copilot.config import settings
 from credit_copilot.explain.counterfactual import evaluate_scenario
 from credit_copilot.explain.shap_service import DEFAULT_TOP_FEATURES, LocalExplanation
-from credit_copilot.models.estimators import PRODUCTION_OPERATING_THRESHOLD
-from credit_copilot.models.registry import PREDICTOR_COLUMNS, require_known_values
+from credit_copilot.models.applicant import ApplicantRecord
+from credit_copilot.models.decision import (
+    CAUSAL_NOTE,
+    COST_ASSUMPTION,
+    COST_RATIO_FN_TO_FP,
+    DECISION_CAVEAT,
+    DIRECTION_NOTE,
+    OPERATING_THRESHOLD,
+    Decision,
+    decide,
+)
 from credit_copilot.rag.chunking import Chunk
 from credit_copilot.rag.vectorstore import SearchResult, VectorStore
 
@@ -100,15 +119,6 @@ __all__ = [
     "simular_escenario",
 ]
 
-OPERATING_THRESHOLD: Final[float] = PRODUCTION_OPERATING_THRESHOLD
-"""The threshold the copilot decides at. Imported, never restated: one control point."""
-
-COST_RATIO_FN_TO_FP: Final[int] = 5
-"""Cost ratio the operating threshold is derived from: one false negative costs five false
-positives. **Declared, not measured** - `docs/MODEL_CARD.md` section 5 records that the
-dataset carries no exposure, recovery or margin data with which to estimate it, and that
-moving the ratio between 3:1 and 10:1 moves 48.5% of the book."""
-
 DEFAULT_TOP_K: Final[int] = 5
 """Fragments returned by a policy query by default.
 
@@ -128,27 +138,6 @@ of the four strategies retrieved. Fetching it by identifier makes the citation t
 band decision independent of whether a search happens to succeed.
 """
 
-Decision = Literal["approve", "refuse"]
-"""What the operating threshold recommends. A recommendation, never an authorisation."""
-
-DIRECTION_NOTE: Final[str] = (
-    "La dirección de cada variable es el signo de su valor SHAP PARA ESTE SOLICITANTE. "
-    "No es el signo de la media poblacional de esa variable: una variable cuya media "
-    "poblacional es negativa puede subir el score de este solicitante, y leer el signo "
-    "poblacional produciría una frase fluida y falsa. Los valores SHAP suman el score del "
-    "bosque sin calibrar, no la probabilidad calibrada sobre la que se decide."
-)
-"""Read by the language model with every explanation. See `explain/shap_service.py`."""
-
-CAUSAL_NOTE: Final[str] = (
-    "Esto es una afirmación sobre el MODELO, no sobre el mundo. Dice cómo evaluaría el "
-    "modelo a un solicitante con esos atributos; NO dice qué pasaría si este cliente los "
-    "cambiara. La primera es verificable reejecutando la herramienta; la segunda es una "
-    "afirmación causal que datos observacionales no soportan. Sección 4.3 de la política "
-    "interna y sección 8 de docs/MODEL_CARD.md."
-)
-"""Read by the language model with every simulation."""
-
 RETRIEVAL_CAVEAT: Final[str] = (
     "La recuperación encuentra el artículo correcto entre los cinco primeros en algo más "
     "de la mitad de las preguntas (hit@5 = 0,538 sobre 26 preguntas anotadas a mano). Que "
@@ -158,31 +147,6 @@ RETRIEVAL_CAVEAT: Final[str] = (
 )
 """Read by the language model with every retrieval. Sections 11.3 and 11.4 of the model card."""
 
-_THRESHOLD_ES: Final[str] = f"{OPERATING_THRESHOLD:.3f}".replace(".", ",")
-"""The operating threshold written the way the corpus and the analyst write it.
-
-Spanish uses a comma as the decimal separator, and a sentence that mixes `0.160` with
-`0,220` reads as two different quantities. Derived from the constant rather than typed out,
-so the text cannot drift from the number the decision actually uses.
-"""
-
-COST_ASSUMPTION: Final[str] = (
-    f"El umbral {_THRESHOLD_ES} NO es una propiedad del modelo: se deriva de "
-    f"suponer que un falso negativo cuesta {COST_RATIO_FN_TO_FP} veces un falso positivo "
-    f"({COST_RATIO_FN_TO_FP}:1). Ese supuesto fue declarado, no medido: el dataset no tiene "
-    "datos de exposición, recuperación ni margen. Con 3:1 el umbral sería 0,220 y con 10:1, "
-    "0,105; mover el cociente entre esos dos extremos desplaza al 48,5% del libro."
-)
-"""Travels with every score, because the number alone is not interpretable."""
-
-DECISION_CAVEAT: Final[str] = (
-    f"Ninguna banda autoriza un rechazo automático. En el umbral {_THRESHOLD_ES}, "
-    "aproximadamente 6 de "
-    "cada 10 solicitantes rechazados habrían pagado. Toda decisión de rechazo en bandas D y "
-    "E requiere que un analista la revise y la firme (sección 2.2 de la política interna)."
-)
-"""Travels with every score, because a probability reads like a verdict and is not one."""
-
 
 class ToolExecutionError(RuntimeError):
     """A tool call was refused, or failed while running.
@@ -190,70 +154,6 @@ class ToolExecutionError(RuntimeError):
     Carried back to the planner as the tool's result rather than raised out of the graph: a
     refusal is information the next planning cycle needs, and a stack trace is not.
     """
-
-
-# ---------------------------------------------------------------------------
-# The applicant, as a contract
-# ---------------------------------------------------------------------------
-
-
-class ApplicantRecord(BaseModel):
-    """The 23 raw attributes the production model reads, all of them required.
-
-    **Why every field is required and none has a default.** A default is an imputation with
-    better manners. `PAY_AMT3 = 0` means *"paid nothing in July"*, which is a business fact;
-    an absent `PAY_AMT3` means *"we do not know"*, which is not. Section 2.3 of the internal
-    credit policy sends the second case to full manual evaluation rather than to the model,
-    and the only way to make that reachable is for the record to refuse to be built.
-
-    **Why the names are the source's names.** `PAY_STATUS_*` is the project's canonical
-    renaming of the source's `PAY_0, PAY_2..PAY_6`; everything else is verbatim what UCI
-    ships. `tests/test_tools.py` asserts this field set equals `PREDICTOR_COLUMNS`, so the
-    contract cannot drift from `schema.py` without a test failing.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    LIMIT_BAL: int
-    SEX: int
-    EDUCATION: int
-    MARRIAGE: int
-    AGE: int
-    PAY_STATUS_1: int
-    PAY_STATUS_2: int
-    PAY_STATUS_3: int
-    PAY_STATUS_4: int
-    PAY_STATUS_5: int
-    PAY_STATUS_6: int
-    BILL_AMT1: int
-    BILL_AMT2: int
-    BILL_AMT3: int
-    BILL_AMT4: int
-    BILL_AMT5: int
-    BILL_AMT6: int
-    PAY_AMT1: int
-    PAY_AMT2: int
-    PAY_AMT3: int
-    PAY_AMT4: int
-    PAY_AMT5: int
-    PAY_AMT6: int
-
-    @model_validator(mode="after")
-    def _values_must_be_known(self) -> "ApplicantRecord":
-        """Refuse categories and magnitudes the data contract does not recognise."""
-        require_known_values(self.model_dump())
-        return self
-
-    def to_frame(self) -> pd.DataFrame:
-        """Render the applicant as the single-row table the pipeline expects.
-
-        Returns:
-            One row, columns in `PREDICTOR_COLUMNS` order, integer dtype like the source.
-        """
-        values = self.model_dump()
-        return pd.DataFrame(
-            [[values[column] for column in PREDICTOR_COLUMNS]], columns=list(PREDICTOR_COLUMNS)
-        ).astype("int64")
 
 
 # ---------------------------------------------------------------------------
@@ -932,7 +832,7 @@ def score_solicitante(request: ScoreInput, context: ToolContext) -> ScoreOutput:
         raise ToolExecutionError(f"No se pudo puntuar al solicitante: {error}") from error
     return ScoreOutput(
         probability_of_default=probability,
-        decision=_decide(probability),
+        decision=decide(probability),
         threshold=OPERATING_THRESHOLD,
         cost_assumption=COST_ASSUMPTION,
         decision_caveat=DECISION_CAVEAT,
@@ -1018,8 +918,8 @@ def simular_escenario(request: SimulateInput, context: ToolContext) -> SimulateO
         baseline_probability=outcome.baseline_probability,
         scenario_probability=outcome.scenario_probability,
         delta=outcome.delta,
-        baseline_decision=_decide(outcome.baseline_probability),
-        scenario_decision=_decide(outcome.scenario_probability),
+        baseline_decision=decide(outcome.baseline_probability),
+        scenario_decision=decide(outcome.scenario_probability),
         threshold=OPERATING_THRESHOLD,
         causal_note=CAUSAL_NOTE,
         model_name=context.scorer.name,
@@ -1080,11 +980,6 @@ def consultar_politica(request: PolicyInput, context: ToolContext) -> PolicyOutp
         documents_searched=tuple(request.document_ids) if request.document_ids else None,
         retrieval_caveat=RETRIEVAL_CAVEAT,
     )
-
-
-def _decide(probability: float) -> Decision:
-    """Apply the operating threshold. A recommendation, never an authorisation."""
-    return "refuse" if probability >= OPERATING_THRESHOLD else "approve"
 
 
 # ---------------------------------------------------------------------------
