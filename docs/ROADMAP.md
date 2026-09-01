@@ -21,6 +21,7 @@
 9. [Estrategia de Git](#9-estrategia-de-git)
 10. [Roadmap de 15 días](#10-roadmap-de-15-días)
 11. [Trazabilidad contra la rúbrica](#11-trazabilidad-contra-la-rúbrica)
+11 bis. [Alcance no cubierto](#11-bis-alcance-no-cubierto)
 12. [Riesgos y mitigaciones](#12-riesgos-y-mitigaciones)
 13. [Principios de trabajo](#13-principios-de-trabajo)
 
@@ -85,10 +86,10 @@ Es falsable: se contrasta el agente completo contra un LLM baseline sin tools, m
 ### 2.3 Objetivos del proyecto
 
 **Objetivos de producto**
-- [ ] Modelo de clasificación con probabilidad calibrada, registrado como modelo productivo en MLflow
-- [ ] Agente conversacional que responda consultas de riesgo con evidencia trazable
-- [ ] API REST que sirva ambos componentes
-- [ ] Sistema desplegable con un solo comando
+- [x] Modelo de clasificación con probabilidad calibrada, registrado como modelo productivo en MLflow
+- [x] Agente conversacional que responda consultas de riesgo con evidencia trazable
+- [x] API REST que sirva ambos componentes
+- [x] Sistema desplegable con un solo comando
 
 **Objetivos de aprendizaje** *(igual de importantes)*
 - [ ] Entender por qué cada métrica se elige y qué esconde
@@ -433,18 +434,32 @@ credit-risk-copilot/
 ├── Taskfile.yml
 ├── .gitignore  .env.example  .pre-commit-config.yaml
 │
-├── docs/
-│   ├── ARCHITECTURE.md
+├── docs/                          ← el árbol REAL, no el planeado; ver la nota de abajo
+│   ├── METHODOLOGY.md
+│   ├── ROADMAP.md
 │   ├── MODEL_CARD.md              ← requisito explícito
 │   ├── DATA_DICTIONARY.md         ← requisito explícito
 │   ├── GIT_STRATEGY.md            ← requisito explícito
 │   ├── EVALUATION.md
+│   ├── ERRORS_AND_LEARNINGS.md
+│   ├── analysis/                  ← evidencia reproducible por un script
+│   │   ├── undocumented-codes-evidence.md
+│   │   ├── null-distribution-evidence.md
+│   │   ├── fairness-evidence.md
+│   │   ├── retrieval-evidence.md
+│   │   ├── agent-evaluation-evidence.md
+│   │   └── online-metrics-evidence.md
 │   └── adr/
-│       ├── 0001-seleccion-dataset.md
-│       ├── 0002-metrica-principal.md
-│       ├── 0003-estrategia-validacion.md
-│       ├── 0004-arquitectura-agente.md
-│       └── 0005-estrategia-chunking.md
+│       ├── 0001-seleccion-del-dataset.md
+│       ├── 0002-metrica-principal-de-evaluacion.md
+│       ├── 0003-nombre-de-la-rama-de-integracion.md
+│       ├── 0004-codigos-no-documentados-de-pay-status.md
+│       ├── 0005-diseno-de-features-de-comportamiento.md
+│       ├── 0006-protocolo-de-verificacion-de-leakage.md
+│       ├── 0007-decisiones-del-modelo-productivo.md
+│       ├── 0008-estrategia-de-chunking-del-corpus.md
+│       ├── 0009-diseno-del-agente.md
+│       └── 0010-arquitectura-de-despliegue.md
 │
 ├── data/
 │   ├── raw/.gitkeep
@@ -480,9 +495,26 @@ credit-risk-copilot/
 │   ├── Dockerfile.model           ← imagen del modelo, sin torch (ADR-0010)
 │   ├── Dockerfile.agent           ← imagen del copiloto
 │   └── docker-compose.yml
-├── infra/                         ← Terraform (Reto ML 2)
-└── .github/workflows/ci.yml
+└── .github/workflows/
+    ├── ci.yml                     lint · formato · tipos · tests
+    └── docker.yml                 build · verificación en la imagen · push a GHCR
 ```
+
+> **Dos ausencias en este árbol son decisiones, no pendientes (2026-08-31).**
+>
+> **No hay `docs/ARCHITECTURE.md`.** El README cubre el contrato de comportamiento con sus dos
+> diagramas de flujo, así que un documento aparte duplicaría ese contenido contra la regla de
+> no solapamiento de la sección 4 de `docs/METHODOLOGY.md`, donde la fila correspondiente
+> también se retiró.
+>
+> **No hay `infra/`.** El **Reto ML 2** no se intentó — ver la sección 11.
+>
+> **El resto del árbol sigue siendo el planeado y diverge del real en `scripts/`**, que hoy
+> tiene veintitrés scripts en vez de los siete previstos: uno por medición, más
+> `run_training.py` y `run_prediction.py`, que el enunciado exige por su nombre y que la fase 5
+> añadió como envoltorios sobre lo que ya existía. Queda señalado y no corregido: este
+> documento es el plan, y el árbol que describe el repositorio entregado es el de la sección 11
+> del README.
 
 ---
 
@@ -531,26 +563,26 @@ develop      ●──●──●──●──●──●──●──●�
 
 #### Día 1 — Andamiaje
 
-- [ ] Crear repo en GitHub, ramas `main` y `develop`, protección de `main`
-- [ ] Estructura de carpetas completa con `.gitkeep` en las provisionales
-- [ ] `pyproject.toml` + `uv sync`
-- [ ] `.gitignore` (datos, `.env`, `.venv`, `__pycache__`, `mlruns/`)
-- [ ] `.env.example` con las variables necesarias
-- [ ] `ruff` + `mypy` + pre-commit configurados
-- [ ] CI mínimo en GitHub Actions: lint + import del paquete
-- [ ] `docs/GIT_STRATEGY.md`
-- [ ] ADR-0001 (dataset) y ADR-0002 (métrica principal)
+- [x] Crear repo en GitHub, ramas `main` y `develop`, protección de `main`
+- [x] Estructura de carpetas completa con `.gitkeep` en las provisionales
+- [x] `pyproject.toml` + `uv sync`
+- [x] `.gitignore` (datos, `.env`, `.venv`, `__pycache__`, `mlruns/`)
+- [x] `.env.example` con las variables necesarias
+- [x] `ruff` + `mypy` + pre-commit configurados
+- [x] CI mínimo en GitHub Actions: lint + import del paquete
+- [x] `docs/GIT_STRATEGY.md`
+- [x] ADR-0001 (dataset) y ADR-0002 (métrica principal)
 
 **Concepto a estudiar hoy:** por qué PR-AUC y no accuracy en datos desbalanceados. Escribirlo en el ADR con tus palabras.
 
 #### Día 2 — Datos crudos y contrato
 
-- [ ] Script de descarga del dataset UCI → `data/raw/`
-- [ ] Inspección inicial: shape, tipos, nulos, distribución del target
-- [ ] `docs/DATA_DICTIONARY.md` — las 24 columnas, tipo, rango, significado
-- [ ] Módulo `data/validator.py`: validación de esquema, rangos y tipos
-- [ ] Tests del validador
-- [ ] Cuenta de DagsHub creada y conectada al repo
+- [x] Script de descarga del dataset UCI → `data/raw/`
+- [x] Inspección inicial: shape, tipos, nulos, distribución del target
+- [x] `docs/DATA_DICTIONARY.md` — las 24 columnas, tipo, rango, significado
+- [x] Módulo `data/validator.py`: validación de esquema, rangos y tipos
+- [x] Tests del validador
+- [x] Cuenta de DagsHub creada y conectada al repo
 
 > ✅ **Hito 0:** repo profesional funcionando, CI en verde, datos versionados y documentados.
 > 🔀 **PR #1:** `feature/00-fundacion` → `develop`
@@ -561,30 +593,30 @@ develop      ●──●──●──●──●──●──●──●�
 
 #### Día 3 — EDA
 
-- [ ] `notebooks/01_preprocessing.ipynb`
-  - [ ] Distribución del target y magnitud del desbalance
+- [x] `notebooks/01_preprocessing.ipynb`
+  - [x] Distribución del target y magnitud del desbalance
   - [ ] Univariado: histogramas, boxplots, detección de outliers
-  - [ ] Bivariado contra el target: tasa de default por segmento
-  - [ ] Matriz de correlación y detección de multicolinealidad (VIF)
-  - [ ] Anomalías en categóricas (categorías no documentadas)
-  - [ ] **Al menos 12 visualizaciones con interpretación escrita**
-- [ ] Documentar 5+ hipótesis derivadas del EDA
+  - [x] Bivariado contra el target: tasa de default por segmento
+  - [x] Matriz de correlación y detección de multicolinealidad (VIF)
+  - [x] Anomalías en categóricas (categorías no documentadas)
+  - [x] **Al menos 12 visualizaciones con interpretación escrita**
+- [x] Documentar 5+ hipótesis derivadas del EDA
 
 **Conceptos a estudiar hoy:** qué revela un boxplot, cómo leer VIF, por qué la multicolinealidad afecta a unos modelos y no a otros.
 
 #### Día 4 — Feature engineering y pipeline
 
-- [ ] `features/builder.py` con las 7 features derivadas de la sección 4.4
-- [ ] `data/preprocessor.py`: `ColumnTransformer` (OHE categóricas, escalado numéricas, bucketing donde aplique)
-- [ ] Pipeline completo y serializable
-- [ ] Guardar procesado en parquet
-- [ ] `scripts/run_preprocessing.py` funcional end-to-end
-- [ ] Tests: shape esperado, features derivadas correctas, y **que todo valor faltante
+- [x] `features/builder.py` con las 7 features derivadas de la sección 4.4
+- [x] `data/preprocessor.py`: `ColumnTransformer` (OHE categóricas, escalado numéricas, bucketing donde aplique)
+- [x] Pipeline completo y serializable
+- [x] Guardar procesado en parquet
+- [x] `scripts/run_preprocessing.py` funcional end-to-end
+- [x] Tests: shape esperado, features derivadas correctas, y **que todo valor faltante
       tenga su columna indicadora correspondiente y ninguna feature impute en silencio**
       (las features producen faltantes **por diseño**, según la
       [decisión 2 del ADR-0005](adr/0005-diseno-de-features-de-comportamiento.md): un
       denominador que no supera el piso da `NaN`, nunca `0`)
-- [ ] Cerrar el notebook 01 con conclusiones
+- [x] Cerrar el notebook 01 con conclusiones
 
 **Concepto clave:** por qué el preprocesamiento va **dentro** del pipeline y no antes del split. Escribirlo en el notebook.
 
@@ -597,33 +629,36 @@ develop      ●──●──●──●──●──●──●──●�
 
 #### Día 5 — Baselines y MLflow
 
-- [ ] MLflow apuntando a DagsHub; primer experimento
-- [ ] Baseline trivial (clase mayoritaria) — el piso contra el que todo se compara
+- [x] MLflow apuntando a DagsHub; primer experimento
+- [x] Baseline trivial (clase mayoritaria) — el piso contra el que todo se compara
 - [ ] Regresión logística con regularización L1 y L2
-- [ ] Modelo solo-demografía vs. modelo solo-comportamiento → **contraste directo de la hipótesis principal**
-- [ ] Loguear métricas, parámetros y artefactos en cada run
+- [x] Modelo solo-demografía vs. modelo solo-comportamiento → **contraste directo de la hipótesis principal**
+- [x] Loguear métricas, parámetros y artefactos en cada run
 
 **Concepto a estudiar hoy:** qué hace realmente la regularización L1 vs L2 y por qué L1 produce selección de features.
 
 #### Día 6 — Modelos avanzados y tuning
 
-- [ ] Random Forest, Gradient Boosting (`HistGradientBoostingClassifier`; LightGBM sustituido, ver la nota del stack)
-- [ ] Estrategias de desbalance: `class_weight` vs. SMOTE vs. sin tratamiento → **comparar, no asumir**
-- [ ] Tuning con Optuna (nested CV para evitar sesgo optimista)
+- [x] Random Forest, Gradient Boosting (`HistGradientBoostingClassifier`; LightGBM sustituido, ver la nota del stack)
+- [x] Estrategias de desbalance: `class_weight` vs. SMOTE vs. sin tratamiento → **comparar, no asumir**
+- [x] Tuning con Optuna (nested CV para evitar sesgo optimista)
 - [ ] Tabla comparativa de todos los modelos con intervalos de confianza
 
 **Concepto a estudiar hoy:** por qué el boosting funciona; en qué se diferencia de bagging.
 
 #### Día 7 — Calibración, explicabilidad y registro
 
-- [ ] Calibración (`CalibratedClassifierCV`): comparar sigmoid vs. isotonic
-- [ ] Curva de calibración antes/después + Brier score
-- [ ] Selección del threshold operativo con matriz de costos explícita
-- [ ] SHAP: summary plot, dependence plots, waterfall de casos individuales
+- [x] Calibración (`CalibratedClassifierCV`): comparar sigmoid vs. isotonic
+- [x] Curva de calibración antes/después + Brier score
+- [x] Selección del threshold operativo con matriz de costos explícita
+- [x] SHAP: summary plot, dependence plots, waterfall de casos individuales
 - [ ] Análisis de errores: caracterizar dónde falla el modelo
-- [ ] **Registrar el modelo ganador en MLflow Model Registry, etapa Production**
-- [ ] `scripts/run_training.py` y `scripts/run_prediction.py`
-- [ ] `docs/MODEL_CARD.md` — primera versión completa
+- [x] **Registrar el modelo ganador en MLflow Model Registry, etapa Production**
+- [x] `scripts/run_training.py` y `scripts/run_prediction.py` — **fase 5.** Envoltorios sobre
+      lo que ya existía: `run_training.py` delega en `register_production_model.py` y no
+      reimplementa nada; `run_prediction.py` compone `load_registered_model`, `ApplicantRecord`
+      en modo estricto y `decide`
+- [x] `docs/MODEL_CARD.md` — primera versión completa
 
 > ✅ **Hito 2:** modelo productivo registrado, calibrado y explicable.
 > 🔀 **PR #3:** `feature/02-modeling` → `develop`
@@ -634,41 +669,41 @@ develop      ●──●──●──●──●──●──●──●�
 
 #### Día 8 — Corpus y RAG
 
-- [ ] Recopilar los documentos normativos en `data/corpus/`
-- [ ] Redactar la política interna sintética (etiquetada como tal)
-- [ ] `rag/chunking.py`: estrategia de chunking + ADR-0005 justificándola
-- [ ] Embeddings con modelo multilingüe → ChromaDB persistente
-- [ ] `scripts/build_rag_index.py`
-- [ ] Set de evaluación: 20 preguntas con fragmento correcto anotado
+- [x] Recopilar los documentos normativos en `data/corpus/`
+- [x] Redactar la política interna sintética (etiquetada como tal)
+- [x] `rag/chunking.py`: estrategia de chunking + ADR-0005 justificándola
+- [x] Embeddings con modelo multilingüe → ChromaDB persistente
+- [x] `scripts/build_rag_index.py`
+- [x] Set de evaluación: 20 preguntas con fragmento correcto anotado
 
 **Conceptos a estudiar hoy:** qué es un embedding, por qué la similitud coseno, cómo el tamaño de chunk afecta la recuperación.
 
 #### Día 9 — Evaluación del retrieval
 
-- [ ] Medir hit@1, hit@3, hit@5 sobre el set de evaluación
-- [ ] Probar 2-3 estrategias de chunking y comparar
-- [ ] Loguear los resultados como experimentos de MLflow
-- [ ] Documentar la estrategia ganadora en el ADR
+- [x] Medir hit@1, hit@3, hit@5 sobre el set de evaluación
+- [x] Probar 2-3 estrategias de chunking y comparar
+- [x] Loguear los resultados como experimentos de MLflow
+- [x] Documentar la estrategia ganadora en el ADR
 
 > Este día es el que separa un RAG serio de uno decorativo. **No saltarlo.**
 
 #### Día 10 — Tools y grafo
 
-- [ ] Implementar las 4 tools con contratos Pydantic estrictos
-- [ ] `explain/counterfactual.py` — el simulador de escenarios
-- [ ] `agent/state.py` — estado tipado del grafo
-- [ ] `agent/graph.py` — nodos, aristas condicionales, ciclo de re-planificación
-- [ ] Tests unitarios de cada tool de forma aislada
+- [x] Implementar las 4 tools con contratos Pydantic estrictos
+- [x] `explain/counterfactual.py` — el simulador de escenarios
+- [x] `agent/state.py` — estado tipado del grafo
+- [x] `agent/graph.py` — nodos, aristas condicionales, ciclo de re-planificación
+- [x] Tests unitarios de cada tool de forma aislada
 
 **Conceptos a estudiar hoy:** cómo funciona el tool-calling de un LLM; qué es el estado en LangGraph y por qué importa.
 
 #### Día 11 — Evaluación del agente
 
-- [ ] Set de evaluación de ~15 consultas de analista
-- [ ] Medir precisión de tool-calling, groundedness, tasa de alucinación
-- [ ] **Baseline de contraste:** LLM sin tools sobre las mismas consultas → esto valida la hipótesis secundaria
-- [ ] Loguear todo en MLflow
-- [ ] Medir tokens y costo por consulta
+- [x] Set de evaluación de ~15 consultas de analista
+- [x] Medir precisión de tool-calling, groundedness, tasa de alucinación
+- [x] **Baseline de contraste:** LLM sin tools sobre las mismas consultas → esto valida la hipótesis secundaria
+- [x] Loguear todo en MLflow
+- [x] Medir tokens y costo por consulta
 
 > ✅ **Hito 3:** agente funcional y **medido**, no solo funcionando.
 > 🔀 **PR #4:** `feature/03-genai` → `develop`
@@ -679,23 +714,23 @@ develop      ●──●──●──●──●──●──●──●�
 
 #### Día 12 — API y contenedores
 
-- [ ] FastAPI: `/predict`, `/explain`, `/simulate`, `/chat`, `/health`, `/model-info`
-- [ ] Schemas Pydantic con validación estricta y manejo de errores
-- [ ] Logging estructurado con IDs de correlación
-- [ ] Dockerfile multi-stage, usuario no-root, imagen optimizada
-- [ ] `docker-compose.yml`: **dos servicios de aplicación**, `model` y `agent`. Ni MLflow ni
+- [x] FastAPI: `/predict`, `/explain`, `/simulate`, `/chat`, `/health`, `/model-info`
+- [x] Schemas Pydantic con validación estricta y manejo de errores
+- [x] Logging estructurado con IDs de correlación
+- [x] Dockerfile multi-stage, usuario no-root, imagen optimizada
+- [x] `docker-compose.yml`: **dos servicios de aplicación**, `model` y `agent`. Ni MLflow ni
       ChromaDB son servicios del compose: **MLflow es remoto** y **Chroma va embebido** en el
       proceso del copiloto como cliente persistente sobre un índice montado (ADR-0010)
-- [ ] Tests de integración de los endpoints
-- [ ] GitHub Actions: build y push a GHCR → **Reto ML 1 cubierto**
+- [x] Tests de integración de los endpoints
+- [x] GitHub Actions: build y push a GHCR → **Reto ML 1 cubierto**
 
 #### Día 13 — Monitoreo y métricas online
 
-- [ ] `monitoring/drift.py`: PSI y KS por feature
-- [ ] `scripts/run_online_simulation.py`: el holdout convertido en flujo de peticiones
-- [ ] Medir latencia p50/p95/p99, throughput, tasa de error
-- [ ] Medir degradación de PR-AUC en el flujo simulado
-- [ ] Loguear todas las métricas online en MLflow
+- [x] `monitoring/drift.py`: PSI y KS por feature
+- [x] `scripts/run_online_simulation.py`: el holdout convertido en flujo de peticiones
+- [x] Medir latencia p50/p95/p99, throughput, tasa de error
+- [x] Medir degradación de PR-AUC en el flujo simulado
+- [x] Loguear todas las métricas online en MLflow
 - [ ] *(Opcional, si sobra tiempo)* Terraform + Azure Container Apps → **Reto ML 2**
 
 > ✅ **Hito 4:** sistema desplegable, medido en condiciones de producción simulada.
@@ -707,27 +742,38 @@ develop      ●──●──●──●──●──●──●──●�
 
 #### Día 14 — Documentación
 
-- [ ] **README.md completo** con las 6 secciones exigidas:
-  - [ ] Problema de ML
-  - [ ] Diagrama de flujo del proyecto
-  - [ ] Descripción del dataset + diccionario de datos
-  - [ ] Model Card
-  - [ ] Resultados con métricas offline **y** online
-  - [ ] Conclusiones
-- [ ] Model Card final: limitaciones, sesgos, uso previsto, uso NO previsto
-- [ ] `ARCHITECTURE.md` con decisiones justificadas
-- [ ] Docstrings completos en todo el módulo
-- [ ] Instrucciones de ejecución verificadas **desde cero en un entorno limpio**
+- [x] **README.md completo** con las 6 secciones exigidas:
+  - [x] Problema de ML
+  - [x] Diagrama de flujo del proyecto
+  - [x] Descripción del dataset + diccionario de datos
+  - [x] Model Card
+  - [x] Resultados con métricas offline **y** online
+  - [x] Conclusiones
+- [x] Model Card final: limitaciones, sesgos, uso previsto, uso NO previsto
+- [x] Docstrings completos en todo el módulo
+- [x] Instrucciones de ejecución verificadas **desde cero en un entorno limpio** — clon nuevo,
+      sin `.venv`, sin `.env` y sin datos, siguiendo solo el README. Ver el reporte del turno 3
+      de la fase 5
 
 #### Día 15 — Congelar
 
-- [ ] Cobertura de tests ≥ 80%
+- [x] Cobertura de tests ≥ 80% — **82%**, 380 tests
 - [ ] CI en verde
-- [ ] Revisión final: ningún secreto en el repo, ningún dato pesado
-- [ ] Verificar que el link público de MLflow/DagsHub funciona
+- [x] Revisión final: ningún secreto en el repo, ningún dato pesado — **verificada con
+      método, no afirmada.** `.env` nunca entró en ningún commit (solo `.env.example` existe
+      como blob); los valores literales de la contraseña de MLflow y de la clave de Anthropic
+      dan **0 coincidencias** en los archivos versionados y en los 40 commits; 0 rutas de la
+      máquina de desarrollo; 0 binarios de datos en todo el historial. El objeto más pesado
+      que git ha almacenado son los notebooks, 884 KB. Comandos en el reporte del turno 4
+- [x] Verificar que el link público de MLflow/DagsHub funciona — **verificado sin
+      credenciales**: la API de MLflow devuelve HTTP 200 y los cuatro experimentos. **Ojo: el
+      enlace bueno es el que termina en `.mlflow`**; la página del repositorio en DagsHub es
+      privada y redirige a login
 - [ ] PR de cierre `feature/05-closing` → `develop`
 - [ ] PR de release `develop` → `main`
-- [ ] **Tag `v1.0.0` con release notes redactadas**
+- [ ] **Tag `v1.0.0` con release notes redactadas** — las notas están escritas en
+      [`docs/RELEASE_NOTES.md`](RELEASE_NOTES.md); **el tag no existe todavía** y lo crea el
+      Verificador, porque un tag es una afirmación de que algo está terminado
 - [ ] **Congelar: ningún commit posterior**
 
 > ✅ **Hito 5 — Proyecto entregado.**
@@ -756,8 +802,42 @@ develop      ●──●──●──●──●──●──●──●�
 | README con 6 secciones | 10% | Fase 5 | 5 |
 | Model Card | 10% | `docs/MODEL_CARD.md` | 2, 5 |
 | Docstrings y naming | 10% | Todo el módulo | Todas |
-| **Reto ML 1** — contenedores + registry | +10% | Docker + GHCR | 4 |
-| **Reto ML 2** — Azure + Actions + Terraform | +10% | `infra/` + CI/CD | 4 |
+| **Reto ML 1** — contenedores + registry | +10% | **✅ CUMPLIDO.** Dos imágenes construidas, verificadas y publicadas en GHCR por `.github/workflows/docker.yml`: `model` 1,13 GB y `agent` 2,47 GB (ADR-0010) | 4 |
+| **Reto ML 2** — Azure + Actions + Terraform | +10% | **❌ NO INTENTADO, por decisión de alcance.** Ver abajo | — |
+
+> **Por qué el Reto ML 2 no se intentó, y por qué se registra como no intentado y no como
+> pendiente (2026-08-31).** Al llegar a la fase 4 quedaban dos días de los quince, y la
+> sección 12 de este documento ya había fijado la regla de corte antes de saber si haría
+> falta: *"son opcionales. **Nunca** sacrificar el 100% obligatorio por el 20% extra"*. El
+> Reto ML 2 exige Terraform y una suscripción de Azure, y su parte de CI/CD —el pipeline que
+> construye, verifica y publica— **sí se hizo**, dentro del Reto ML 1. Lo que no existe es la
+> capa de infraestructura como código y el despliegue en la nube.
+>
+> **«No intentado» y «pendiente» no son lo mismo**, y la diferencia es lo que este registro
+> existe para conservar: un pendiente afirma que alguien va a volver, y aquí nadie va a
+> volver. La casilla del día 13 queda **sin marcar a propósito**, con esta nota al lado.
+
+---
+
+## 11 bis. Alcance no cubierto
+
+**Cuatro tareas de este plan no se hicieron, y se registran en vez de borrarse.** Un plan que
+oculta lo que no se hizo deja de servir como registro: el lector no puede distinguir entre lo
+que se decidió no hacer y lo que nadie miró. Las cuatro son **mejoras reales** y ninguna
+cambia una conclusión del proyecto, que es exactamente el criterio con el que se dejaron
+fuera al quedar dos días.
+
+| Tarea | Día | Qué falta, con precisión | Por qué no cambia ninguna conclusión |
+| --- | ---: | --- | --- |
+| **Boxplots en el EDA univariado** | 3 | El notebook 01 tiene 16 figuras, histogramas, VIF y detección de outliers; **cero boxplots**. La casilla los nombra literalmente | Los outliers ya están caracterizados por otra vía, y la decisión que dependía de ellos —`RobustScaler` en vez de `StandardScaler`— se tomó **midiendo** la asimetría y la curtosis, no mirando un dibujo |
+| **Variante L1 de la logística** | 5 | `LOGISTIC_L1_RATIO = 0.0`, así que solo se midió L2. El módulo ya declara que la segunda configuración quedaba para otro turno | La logística es el **baseline**, no el candidato productivo. Lo que L1 aportaría es selección de features sobre un modelo que ya se descartó frente al forest por +0,0240 de PR-AUC |
+| **Intervalos de confianza en la tabla comparativa** | 6 | `docs/EVALUATION.md` reporta **media ± desviación entre folds**, que no es un intervalo de confianza | Las decisiones del proyecto no se tomaron por solapamiento de intervalos sino contra un **umbral de significancia práctica de 0,02 fijado antes de ver resultados**, y las comparaciones que importaban se hicieron **pareadas fold a fold**, que es más informativo que un IC marginal |
+| **Análisis de errores dedicado** | 7 | No existe una caracterización de *dónde* falla el modelo por segmento | Lo que un análisis de errores habría destapado —que el modelo trata distinto a distintos grupos— **está medido y con más rigor** en la entrada 010 y en la sección 6 bis del Model Card, que es equidad medida sobre probabilidades fuera de fold |
+
+**Ninguna de las cuatro está prometida para después.** Si alguien las retoma, el sitio donde
+está lo que sí se hizo es: el notebook 01 para el EDA, `models/estimators` para la logística,
+`docs/EVALUATION.md` para el protocolo de comparación, y la entrada 010 para los errores por
+grupo.
 
 ---
 
