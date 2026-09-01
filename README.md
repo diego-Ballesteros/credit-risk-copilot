@@ -339,6 +339,24 @@ una intuición ([ADR-0006](docs/adr/0006-protocolo-de-verificacion-de-leakage.md
 
 ## 8 · Resultados offline
 
+> ### 📊 Los experimentos son públicos y se pueden abrir
+>
+> **<https://dagshub.com/diego-Ballesteros/credit-risk-copilot.mlflow>**
+>
+> Cada cifra de esta sección y de la siguiente tiene un run detrás, con sus parámetros, sus
+> métricas y sus artefactos. `docs/EVALUATION.md` cita el identificador de cada uno.
+>
+> | Experimento | Qué contiene |
+> | --- | --- |
+> | `credit-risk-baselines` | Baselines, prueba de fuga, contraste de hipótesis, comparación de modelos, desbalance, tuning, calibración, umbral, SHAP, equidad y el registro del modelo productivo |
+> | `credit-risk-retrieval` | Las cuatro estrategias de chunking, un run por estrategia |
+> | `credit-risk-agent` | Los tres brazos del copiloto sobre las 19 consultas |
+> | `credit-risk-online` | Latencia, throughput, error, drift y latencia del copiloto |
+>
+> **Verificado sin credenciales** el 2026-08-31: la API del servidor de seguimiento responde
+> HTTP 200 y devuelve los cuatro experimentos a quien no ha iniciado sesión. **Usa el enlace
+> terminado en `.mlflow`**; la página del repositorio en DagsHub es privada y redirige a login.
+
 ### 8.1 · El modelo, con su baseline al lado
 
 Validación cruzada de 5 folds, preprocesador ajustado dentro de cada fold, `random_state=42`.
@@ -685,9 +703,21 @@ docker pull ghcr.io/diego-ballesteros/credit-risk-copilot/agent:latest
 
 El workflow `.github/workflows/docker.yml` etiqueta cada build con la rama, con
 `sha-<commit>` —la única etiqueta que no se mueve bajo un despliegue vivo— y con `latest`
-solo desde `main`. **El tamaño de cada imagen lo publica ese workflow en el resumen de su
-ejecución**; el [ADR-0010](docs/adr/0010-arquitectura-de-despliegue.md) lo declara **no
-medido** en el repositorio y aquí no se transcribe ninguna cifra que no esté registrada.
+solo desde `main`.
+
+| Imagen | Tamaño | Qué la domina |
+| --- | ---: | --- |
+| `model` | **1,13 GB** | Su capacidad de **explicar**, no la de puntuar: `numba`+`llvmlite` son 131 MB por SHAP |
+| `agent` | **2,47 GB** | `torch`, `chromadb` y `transformers` — los 604 MB exclusivos del copiloto |
+
+Las dos cifras salen del resumen de ejecución del propio workflow y están registradas en el
+[ADR-0010](docs/adr/0010-arquitectura-de-despliegue.md).
+
+**La imagen del copiloto pesaría más del doble sin una decisión de empaquetado.** `torch` se
+resuelve contra el índice de ruedas **solo-CPU**, lo que retira **19 paquetes de CUDA y
+NVIDIA** —2.094,3 MiB de ruedas— que nada en este sistema usaría: el modelo de embeddings
+corre en CPU. Sumarlos a los 2,47 GB actuales pone la imagen **por encima de 4,5 GB**, y esa
+suma es aritmética y no una imagen construida.
 
 **Son dos imágenes y no una a propósito**: la aplicación que devuelve una probabilidad no
 debe arrastrar un framework de deep learning para hacerlo. La separación **está garantizada
@@ -696,6 +726,21 @@ verifica la ausencia de `torch`, `chromadb`, `anthropic`, `langgraph` y
 `sentence-transformers` en `sys.modules`, y el workflow repite la misma prueba **dentro de la
 imagen construida**, que es donde importa. Resuelto sobre el lockfile son **103 paquetes
 contra 195**.
+
+### 10.5 bis · Los dos retos opcionales
+
+| | Estado |
+| --- | --- |
+| **Reto ML 1** — contenedores y registro de imágenes | **✅ Cumplido.** Las dos imágenes se construyen, se verifican **dentro de la propia imagen** y se publican en GHCR desde `.github/workflows/docker.yml` |
+| **Reto ML 2** — Azure Container Apps y Terraform | **❌ No intentado**, por decisión de alcance |
+
+**El Reto ML 2 no está pendiente: no se intentó, y la diferencia importa.** Al llegar a la
+fase 4 quedaban dos días de los quince, y la regla de corte estaba fijada en
+`docs/ROADMAP.md` desde antes de saber si haría falta: *nunca sacrificar el 100% obligatorio
+por el 20% extra*. Su mitad de CI/CD —el pipeline que construye, verifica y publica— **sí
+existe**, dentro del Reto ML 1; lo que no existe es la capa de infraestructura como código ni
+el despliegue en la nube. **No hay carpeta `infra/`**, y su ausencia es la decisión, no un
+olvido.
 
 ### 10.6 · Calidad
 
@@ -765,6 +810,11 @@ nadie.
 
 ## 12 · Documentación
 
+**Evidencia de experimentos, pública y sin credenciales:**
+**<https://dagshub.com/diego-Ballesteros/credit-risk-copilot.mlflow>** — los cuatro
+experimentos (`credit-risk-baselines`, `credit-risk-retrieval`, `credit-risk-agent` y
+`credit-risk-online`) con sus runs, parámetros, métricas y artefactos.
+
 | Documento | Qué contiene |
 | --- | --- |
 | [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) | La metodología completa: roles, ciclo, disciplina de verificación y modos de falla propios de ML. **Dueño del contenido de `CLAUDE.md`** |
@@ -772,7 +822,7 @@ nadie.
 | [`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md) | Contrato de datos: las 25 columnas con rango declarado **y observado**, las discrepancias con la fuente, las 22 features derivadas y la matriz de 110 columnas |
 | [`docs/MODEL_CARD.md`](docs/MODEL_CARD.md) | Qué hace el modelo, con qué datos, su umbral, su equidad medida, sus limitaciones y **para qué NO debe usarse** |
 | [`docs/EVALUATION.md`](docs/EVALUATION.md) | Las 13 mediciones del proyecto, cada una con su protocolo, su **baseline obligatorio**, su run de MLflow y su comando de reproducción |
-| [`docs/ERRORS_AND_LEARNINGS.md`](docs/ERRORS_AND_LEARNINGS.md) | Ocho errores reales **con su mecanismo**, no con su síntoma |
+| [`docs/ERRORS_AND_LEARNINGS.md`](docs/ERRORS_AND_LEARNINGS.md) | Diez errores reales **con su mecanismo**, no con su síntoma |
 | [`docs/GIT_STRATEGY.md`](docs/GIT_STRATEGY.md) | Ramas, Conventional Commits, PRs, releases y convención de idioma |
 | [`docs/analysis/`](docs/analysis/) | Seis mediciones de registro, cada una reproducible por un script del repositorio |
 | [`docs/adr/`](docs/adr/) | Diez Architecture Decision Records: por qué el proyecto es como es |

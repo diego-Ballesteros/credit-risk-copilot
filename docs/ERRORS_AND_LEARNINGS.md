@@ -613,3 +613,118 @@ entrada corregida se corrige con una entrada nueva que referencia a la anterior.
   arranque del sistema—. La segunda, que es la de la sección 6.4 de la metodología dicha de otra
   forma: **el camino degradado también es una superficie, y afirmarlo no lo verifica.** Estaba
   escrito en un docstring, era falso, y bastó un `curl` para saberlo.
+
+### 009 — Una directiva de configuración perfectamente válida que no hace nada, y el comando termina con éxito
+
+- **Fecha:** 2026-08-31
+- **Fase:** 04-production
+
+- **Síntoma:** `pyproject.toml` declaraba un índice de paquetes alternativo para resolver
+  `torch` contra las ruedas **solo-CPU**, y la resolución seguía trayendo las ruedas de CUDA.
+  `uv lock` **terminó con código de salida 0**, sin advertencia, sin aviso y sin una línea que
+  mencionara el índice. La configuración estaba escrita, era sintácticamente válida, el
+  archivo de bloqueo se regeneraba entero, y el resultado era idéntico al de no haberla
+  escrito.
+
+- **Causa raíz:** **`tool.uv.sources` solo reescribe el índice de una dependencia
+  declarada de forma directa.** `torch` no estaba declarado: llegaba **de forma transitiva**,
+  como requisito de `sentence-transformers`. Una fuente declarada para un paquete que el
+  proyecto no nombra no tiene a qué aplicarse, así que el resolutor la ignora y resuelve el
+  paquete contra el índice por defecto.
+
+  El mecanismo que hace el fallo invisible es que **las tres condiciones que un humano
+  comprobaría se cumplen**: el TOML parsea, el nombre del paquete está bien escrito, y el
+  comando termina bien. No existe ningún estado de error que delatar, porque desde el punto de
+  vista de la herramienta no ha ocurrido nada anómalo: se le pidió una regla para un paquete
+  directo y no había ninguno.
+
+  El costo era además **invisible en el entorno de desarrollo**, que es Windows: las ruedas de
+  CUDA están marcadas `sys_platform == 'linux'` y solo aparecen en la resolución para la
+  plataforma de la imagen. La configuración que no hacía nada no rompía nada localmente.
+
+- **Diagnóstico:** no salió de leer el mensaje del comando, porque no hubo mensaje. Salió de
+  **mirar el archivo de bloqueo en vez del código de salida**: buscar en `uv.lock` los
+  paquetes cuyo nombre empieza por `nvidia-` y encontrarlos todavía ahí después de haber
+  escrito la configuración que existía para quitarlos.
+
+- **Solución:** declarar `torch` **explícitamente** en el grupo de dependencias `agent`, aunque
+  `sentence-transformers` ya lo requiera, de modo que pase a ser una dependencia directa y la
+  fuente tenga sobre qué aplicarse. `pyproject.toml` lo deja escrito en un comentario, porque
+  una dependencia declarada "de más" invita a que alguien la borre por redundante y reintroduzca
+  el problema sin tocar la configuración que aparentemente lo resolvía.
+
+- **Prevención:** **verificar el efecto sobre el archivo de bloqueo, no sobre el código de
+  salida del comando.** El efecto es comprobable y quedó medido: la resolución pasa de **255 a
+  236 paquetes**, y desaparecen **19** —los dieciséis `nvidia-*`, `triton`, `cuda-bindings`,
+  `cuda-pathfinder` y `cuda-toolkit`— que suman **2.094,3 MiB** de ruedas de Linux x86_64. La
+  reproducción exacta está en la nota de estado del
+  [ADR-0010](adr/0010-arquitectura-de-despliegue.md).
+
+- **Aprendizaje:** **una configuración que se ignora en silencio es peor que una configuración
+  ausente**, porque la ausente se nota y la ignorada se lee como cumplida. Quien abra el
+  `pyproject.toml` verá el índice solo-CPU declarado y concluirá, razonablemente, que el
+  proyecto resuelve `torch` contra él.
+
+  La regla generalizable no es sobre `uv`: **una directiva declarativa se verifica por su
+  efecto sobre el artefacto que produce, nunca por que el comando haya terminado bien.** Un
+  código de salida 0 afirma que la herramienta hizo lo que entendió, y el modo de falla de esta
+  familia es precisamente que entendió otra cosa. Es la misma forma que la entrada 001 de este
+  documento —un filtro de ramas que descartaba el evento en silencio, con la CI en verde por no
+  haber corrido— y conviene verlas juntas: **en las dos, el verde significaba "no hice nada".**
+
+### 010 — El cliente se construyó antes de configurarlo, y el error describe con precisión el sitio equivocado
+
+- **Fecha:** 2026-08-31
+- **Fase:** 04-production
+
+- **Síntoma:** una consulta al registro de modelos falló diciendo que **la versión no existía**,
+  contra un registro perfectamente alcanzable que **sí contenía esa versión**. El mismo
+  identificador, `credit-risk-default-probability` versión 1, se cargaba sin problema desde otro
+  punto del mismo proceso segundos antes.
+
+- **Causa raíz:** **el cliente de MLflow se construyó antes de configurar la dirección del
+  servidor.** `mlflow.MlflowClient()` sin URI de seguimiento definida no falla ni pregunta: cae
+  al **almacén local por defecto**, un directorio o un SQLite en el disco de quien lo ejecuta.
+  Ahí no hay ninguna versión registrada, porque el registro de este proyecto es **remoto**.
+
+  Lo que convierte esto en una trampa y no en un descuido es que **el mensaje de error es
+  correcto**. El cliente informa fielmente de lo que vio: en el almacén contra el que estaba
+  mirando, esa versión efectivamente no existe. Lo que el mensaje no dice —y no tiene forma de
+  decir, porque no sabe que hay otro sitio donde mirar— es **dónde estaba mirando**. El
+  diagnóstico que sugiere («la versión no está registrada», «el registro está mal») apunta a un
+  problema del registro, y el problema estaba en el orden de dos líneas del cliente.
+
+- **Diagnóstico:** la pista fue la **contradicción interna**, no el mensaje: el mismo proceso
+  cargaba el artefacto de esa misma versión por otra vía. Dos respuestas incompatibles sobre el
+  mismo identificador solo se explican si no se está preguntando al mismo sitio, y a partir de
+  ahí la pregunta deja de ser *"¿existe la versión?"* y pasa a ser *"¿contra qué almacén se
+  resuelve cada una?"*.
+
+- **Solución:** llamar a `configure_mlflow()` **inmediatamente antes** de construir el cliente,
+  con un comentario al lado que explica qué pasa si no se hace. Sin él, la compuerta de
+  honestidad de la simulación online habría reportado *"la etiqueta no se pudo leer"* para un
+  registro perfectamente sano, convirtiendo la evidencia que esa compuerta protege en un
+  encogimiento de hombros.
+
+- **Prevención:** **configurar antes de construir, y que toda función que construya un cliente
+  lo haga después de la configuración.** Hoy los tres sitios que construyen un `MlflowClient`
+  cumplen la regla, pero **solo uno la hace explícita**: los otros dos están a salvo porque algo
+  anterior en su propio flujo ya configuró —`ensure_experiment()` en el script de registro y
+  `configure_mlflow()` dentro de la carga del artefacto en la capa de API—. **Eso es una
+  garantía posicional**, del nivel 3 de la sección 6.5 de `docs/METHODOLOGY.md`: se cumple
+  mientras nadie mueva una llamada. Queda declarado como tal en vez de darse por resuelto.
+
+  Añadido en el mismo turno: `mlflow.db` entra al `.gitignore`. Es el archivo que el almacén
+  local por defecto crea, y este error es exactamente el camino por el que aparece sin que nadie
+  lo pida.
+
+- **Aprendizaje:** **un valor por defecto silencioso convierte un error de orden en un error de
+  contenido**, y el segundo se investiga en el sitio equivocado. Si el cliente sin configurar
+  hubiera fallado diciendo *"no hay URI de seguimiento"*, el diagnóstico habría durado
+  diez segundos; al caer a un almacén local plausible, produjo un mensaje verdadero sobre un
+  sitio que a nadie le interesaba.
+
+  La regla que queda: **cuando un error afirme que algo no existe, la primera pregunta no es si
+  existe, sino dónde se buscó.** Y la de diseño, que es la misma de la entrada 008 vista desde
+  otro ángulo: **un componente que se apaña solo cuando le falta configuración traslada el costo
+  del fallo al momento del diagnóstico**, que es siempre más caro que el arranque.
