@@ -600,7 +600,9 @@ no se reporta ninguno, y la calidad de las respuestas **no se remidió**.
 ### 10.2 · Instalación
 
 ```bash
-git clone git@github.com:diego-Ballesteros/credit-risk-copilot.git
+git clone https://github.com/diego-Ballesteros/credit-risk-copilot.git
+# o, con claves SSH configuradas:
+# git clone git@github.com:diego-Ballesteros/credit-risk-copilot.git
 cd credit-risk-copilot
 
 uv sync                      # entorno, dependencias y paquete en modo editable
@@ -635,9 +637,14 @@ uv run python scripts/run_imbalance_comparison.py    # entrada 005: class_weight
 uv run python scripts/run_tuning.py                  # entrada 006: Optuna en CV anidada
 uv run python scripts/run_calibration.py             # entrada 007
 uv run python scripts/run_threshold_selection.py     # entrada 008: matriz de costos
-uv run python scripts/register_production_model.py   # entrada 009: registra la versión 1
+uv run python scripts/run_training.py                # entrada 009: entrena y registra el productivo
+                                                     #   (alias de register_production_model.py)
 uv run python scripts/run_shap_analysis.py           # explicabilidad
 uv run python scripts/run_fairness_analysis.py       # entrada 010: equidad
+
+# --- Puntuar con el modelo registrado --------------------------------------
+uv run python scripts/run_prediction.py --applicant-row 8842
+uv run python scripts/run_prediction.py --applicant-file solicitantes.json --output scores.csv
 
 # --- Copiloto --------------------------------------------------------------
 uv run python scripts/build_rag_index.py             # indexa el corpus en ChromaDB
@@ -649,6 +656,18 @@ uv run python scripts/run_agent.py "¿Apruebo esta solicitud?" --applicant-row 8
 `measure_null_distribution.py` es caro —ocho permutaciones del target, cuarenta ajustes
 contando los folds— y se corre **cuando cambia el pipeline**, no en cada turno. `run_leakage_check.py` es un solo ajuste y es el que
 se corre siempre.
+
+> ⚠️ **Reejecutar `run_baselines.py` hoy NO reproduce las cifras de la entrada 001, y es a
+> propósito.** Aquella medición se hizo con `class_weight="balanced"` en la logística; la
+> entrada 005 midió después que reponderar **no compra ordenamiento y cuesta +0,0404 de
+> Brier**, así que se quitó del estimador por defecto. Verificado en un clon limpio: hoy el
+> script da **PR-AUC 0,544789 y Brier 0,135386**, y volviendo a poner `class_weight="balanced"`
+> reaparecen **0,540173 y 0,183357**, que son las cifras de la entrada 001 **exactas**. El
+> resto del proyecto reproduce sin nota: el azar estratificado da 0,220047 ± 0,001880, idéntico.
+>
+> Las comparaciones de las entradas 001 y 003 siguen siendo válidas porque **todos sus brazos
+> llevaban la misma configuración**; lo que ya no describen es el estimador que el proyecto
+> entrega hoy.
 
 ### 10.4 · Levantar las dos APIs
 
@@ -787,8 +806,8 @@ credit-risk-copilot/
 │   ├── api/           schemas · dependencies · model_app · agent_app
 │   └── monitoring/    drift · metrics
 │
-├── scripts/                        un script por medición, todos reproducibles
-├── tests/                          13 módulos, 331 tests, 79% de cobertura
+├── scripts/                        23: uno por medición, más entrenamiento y predicción
+├── tests/                          16 módulos, 380 tests, 82% de cobertura
 │
 ├── docker/
 │   ├── Dockerfile.model            sin torch, sin chroma  (ADR-0010)

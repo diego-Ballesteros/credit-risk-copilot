@@ -112,6 +112,32 @@ invalida y explica por qué.
     hay conjunto de test retenido, así que no son una estimación de desempeño en
     producción, y no hay eje temporal con el que medir deriva.
 
+> **Nota de estado, 2026-08-31 — reejecutar este script hoy NO devuelve estas cifras, y la
+> diferencia está medida.** La columna de la logística se midió con
+> `class_weight="balanced"`, que era el default de entonces. La **entrada 005** midió después
+> que reponderar no compra ordenamiento (−0,0009 de PR-AUC) y cuesta **+0,0404 de Brier**, así
+> que se quitó de `build_logistic_regression`. Verificado en un clon limpio durante la fase 5,
+> sobre los mismos folds y la misma semilla:
+>
+> | Configuración | PR-AUC | Brier |
+> | --- | ---: | ---: |
+> | `class_weight="balanced"` — la de esta entrada | **0,540173** | **0,183357** |
+> | `class_weight=None` — la que el proyecto entrega hoy | 0,544789 | 0,135386 |
+>
+> **Las cifras de arriba reproducen exactas con la configuración con la que se midieron**, así
+> que esta entrada no se corrige: se fecha. El azar estratificado, que no depende del
+> estimador, reproduce **0,220047 ± 0,001880** idéntico sin nota ninguna.
+>
+> **Qué sigue siendo válido y qué no.** La comparación interna de esta entrada y la de la
+> entrada 003 **se mantienen**, porque todos sus brazos llevaban la misma configuración. Lo
+> que estas cifras ya no describen es el estimador que el repositorio entrega.
+>
+> **Consecuencia abierta, reportada y no corregida aquí:** `scripts/run_baselines.py` sigue
+> nombrando el run `logistic-l2-balanced` y describiéndolo como *balanced class weights* en su
+> docstring, de modo que **el nombre afirma una configuración que el código ya no usa**. Cada
+> corrida futura aterriza en MLflow bajo ese nombre. Renombrarlo es una decisión sobre el
+> historial del experimento y no un movimiento.
+
 ### 002 — Prueba del target barajado: verificación de ausencia de leakage
 
 - **Fecha:** 2026-08-26

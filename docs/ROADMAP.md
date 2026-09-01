@@ -21,6 +21,7 @@
 9. [Estrategia de Git](#9-estrategia-de-git)
 10. [Roadmap de 15 días](#10-roadmap-de-15-días)
 11. [Trazabilidad contra la rúbrica](#11-trazabilidad-contra-la-rúbrica)
+11 bis. [Alcance no cubierto](#11-bis-alcance-no-cubierto)
 12. [Riesgos y mitigaciones](#12-riesgos-y-mitigaciones)
 13. [Principios de trabajo](#13-principios-de-trabajo)
 
@@ -509,9 +510,11 @@ credit-risk-copilot/
 > **No hay `infra/`.** El **Reto ML 2** no se intentó — ver la sección 11.
 >
 > **El resto del árbol sigue siendo el planeado y diverge del real en `scripts/`**, que hoy
-> tiene veintiún scripts, uno por medición, en vez de los siete previstos, y ninguno se llama
-> `run_training.py` ni `run_prediction.py`. Queda señalado y no corregido: este documento es el
-> plan, y el árbol que describe el repositorio entregado es el de la sección 11 del README.
+> tiene veintitrés scripts en vez de los siete previstos: uno por medición, más
+> `run_training.py` y `run_prediction.py`, que el enunciado exige por su nombre y que la fase 5
+> añadió como envoltorios sobre lo que ya existía. Queda señalado y no corregido: este
+> documento es el plan, y el árbol que describe el repositorio entregado es el de la sección 11
+> del README.
 
 ---
 
@@ -651,7 +654,10 @@ develop      ●──●──●──●──●──●──●──●�
 - [x] SHAP: summary plot, dependence plots, waterfall de casos individuales
 - [ ] Análisis de errores: caracterizar dónde falla el modelo
 - [x] **Registrar el modelo ganador en MLflow Model Registry, etapa Production**
-- [ ] `scripts/run_training.py` y `scripts/run_prediction.py`
+- [x] `scripts/run_training.py` y `scripts/run_prediction.py` — **fase 5.** Envoltorios sobre
+      lo que ya existía: `run_training.py` delega en `register_production_model.py` y no
+      reimplementa nada; `run_prediction.py` compone `load_registered_model`, `ApplicantRecord`
+      en modo estricto y `decide`
 - [x] `docs/MODEL_CARD.md` — primera versión completa
 
 > ✅ **Hito 2:** modelo productivo registrado, calibrado y explicable.
@@ -745,11 +751,13 @@ develop      ●──●──●──●──●──●──●──●�
   - [x] Conclusiones
 - [x] Model Card final: limitaciones, sesgos, uso previsto, uso NO previsto
 - [x] Docstrings completos en todo el módulo
-- [ ] Instrucciones de ejecución verificadas **desde cero en un entorno limpio**
+- [x] Instrucciones de ejecución verificadas **desde cero en un entorno limpio** — clon nuevo,
+      sin `.venv`, sin `.env` y sin datos, siguiendo solo el README. Ver el reporte del turno 3
+      de la fase 5
 
 #### Día 15 — Congelar
 
-- [ ] Cobertura de tests ≥ 80%
+- [x] Cobertura de tests ≥ 80% — **82%**, 380 tests
 - [ ] CI en verde
 - [ ] Revisión final: ningún secreto en el repo, ningún dato pesado
 - [x] Verificar que el link público de MLflow/DagsHub funciona — **verificado sin
@@ -801,6 +809,28 @@ develop      ●──●──●──●──●──●──●──●�
 > **«No intentado» y «pendiente» no son lo mismo**, y la diferencia es lo que este registro
 > existe para conservar: un pendiente afirma que alguien va a volver, y aquí nadie va a
 > volver. La casilla del día 13 queda **sin marcar a propósito**, con esta nota al lado.
+
+---
+
+## 11 bis. Alcance no cubierto
+
+**Cuatro tareas de este plan no se hicieron, y se registran en vez de borrarse.** Un plan que
+oculta lo que no se hizo deja de servir como registro: el lector no puede distinguir entre lo
+que se decidió no hacer y lo que nadie miró. Las cuatro son **mejoras reales** y ninguna
+cambia una conclusión del proyecto, que es exactamente el criterio con el que se dejaron
+fuera al quedar dos días.
+
+| Tarea | Día | Qué falta, con precisión | Por qué no cambia ninguna conclusión |
+| --- | ---: | --- | --- |
+| **Boxplots en el EDA univariado** | 3 | El notebook 01 tiene 16 figuras, histogramas, VIF y detección de outliers; **cero boxplots**. La casilla los nombra literalmente | Los outliers ya están caracterizados por otra vía, y la decisión que dependía de ellos —`RobustScaler` en vez de `StandardScaler`— se tomó **midiendo** la asimetría y la curtosis, no mirando un dibujo |
+| **Variante L1 de la logística** | 5 | `LOGISTIC_L1_RATIO = 0.0`, así que solo se midió L2. El módulo ya declara que la segunda configuración quedaba para otro turno | La logística es el **baseline**, no el candidato productivo. Lo que L1 aportaría es selección de features sobre un modelo que ya se descartó frente al forest por +0,0240 de PR-AUC |
+| **Intervalos de confianza en la tabla comparativa** | 6 | `docs/EVALUATION.md` reporta **media ± desviación entre folds**, que no es un intervalo de confianza | Las decisiones del proyecto no se tomaron por solapamiento de intervalos sino contra un **umbral de significancia práctica de 0,02 fijado antes de ver resultados**, y las comparaciones que importaban se hicieron **pareadas fold a fold**, que es más informativo que un IC marginal |
+| **Análisis de errores dedicado** | 7 | No existe una caracterización de *dónde* falla el modelo por segmento | Lo que un análisis de errores habría destapado —que el modelo trata distinto a distintos grupos— **está medido y con más rigor** en la entrada 010 y en la sección 6 bis del Model Card, que es equidad medida sobre probabilidades fuera de fold |
+
+**Ninguna de las cuatro está prometida para después.** Si alguien las retoma, el sitio donde
+está lo que sí se hizo es: el notebook 01 para el EDA, `models/estimators` para la logística,
+`docs/EVALUATION.md` para el protocolo de comparación, y la entrada 010 para los errores por
+grupo.
 
 ---
 
