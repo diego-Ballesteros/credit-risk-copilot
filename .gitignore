@@ -32,6 +32,11 @@ coverage.xml
 # --- Experimentos -----------------------------------------------------------
 mlruns/
 mlartifacts/
+# El backend SQLite que MLflow crea cuando la URI de seguimiento apunta a un archivo local.
+# El seguimiento de este proyecto es REMOTO, así que este archivo solo aparece por accidente:
+# con la variable de entorno sin definir, el cliente cae al almacén local por defecto y lo
+# crea sin decir nada. Se ignora para que ese accidente no pueda además entrar al repositorio.
+mlflow.db
 
 # --- Datos: se ignora todo el contenido salvo los .gitkeep ------------------
 data/**

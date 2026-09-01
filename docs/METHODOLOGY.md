@@ -154,8 +154,7 @@ contenido en dos lados diverge, porque nadie actualiza dos veces.
 
 | Documento | Contrato |
 |---|---|
-| `README.md` | El entregable. Qué es el proyecto, para el evaluador y para un tercero |
-| `docs/ARCHITECTURE.md` | Comportamiento: qué hace el sistema y qué lo restringe. **Cero citas `archivo:línea`** |
+| `README.md` | El entregable. Qué es el proyecto, para el evaluador y para un tercero. **También el contrato de comportamiento**: qué hace el sistema y qué lo restringe, con sus dos diagramas de flujo. **Cero citas `archivo:línea`** |
 | `docs/DATA_DICTIONARY.md` | Contrato de datos: columnas, tipos, rangos, categorías, incluidas las no documentadas por la fuente |
 | `docs/MODEL_CARD.md` | Qué hace el modelo, con qué datos, qué NO debe usarse para, y sus limitaciones |
 | `docs/adr/` | Una entrada por decisión, con su razón. **Nunca se corrige hacia atrás** |
@@ -165,6 +164,15 @@ contenido en dos lados diverge, porque nadie actualiza dos veces.
 | `docs/GIT_STRATEGY.md` | Estrategia de ramas, commits, pull requests, releases y convención de idioma |
 | `CLAUDE.md` | Reglas de proceso que el Ejecutor lee al empezar. **Corto**, o deja de leerse |
 | `docs/METHODOLOGY.md` | Dueño de la metodología de trabajo. Ante contradicción con `CLAUDE.md`, **este manda** |
+
+> **No hay `docs/ARCHITECTURE.md`, y es una decisión y no un olvido (2026-08-31).** Este
+> documento planificaba uno separado para el contrato de comportamiento. El README terminó
+> cubriéndolo —qué hace el sistema, el recorrido de datos crudos a copiloto, el grafo del
+> copiloto, y qué restringe a cada pieza— así que un archivo aparte **duplicaría ese
+> contenido**, que es exactamente lo que prohíbe la regla de no solapamiento con la que abre
+> esta sección: el mismo contenido en dos lados diverge, porque nadie actualiza dos veces. La
+> fila se retira en vez de dejarse apuntando a un archivo que no existe, porque un contrato
+> declarado y no cumplido es peor que un contrato ausente.
 
 ### Reglas duras
 

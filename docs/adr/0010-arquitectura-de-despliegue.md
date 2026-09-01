@@ -171,6 +171,18 @@ esas dos cifras cuando la primera ejecución termine. **Escribir aquí un númer
 inventar una medición**, y la regla del proyecto es que una cifra que no se pudo medir se
 declara como no medida.
 
+> **Hueco completado, 2026-08-31.** El workflow ejecutó y publicó las dos imágenes en GHCR.
+> Los tamaños, tomados del paso *Report image size* del resumen de esa ejecución:
+>
+> | Imagen | Tamaño | Qué la domina |
+> | --- | ---: | --- |
+> | `model` | **1,13 GB** | Su capacidad de **explicar**, no la de puntuar: `numba`+`llvmlite` (131 MB, dependencia de SHAP), `scipy`, `pyarrow`, `mlflow` |
+> | `agent` | **2,47 GB** | `torch`, `chromadb` y `transformers` — los 604 MB exclusivos del copiloto, ya en su forma instalada de Linux |
+>
+> El párrafo de arriba se conserva tal como se escribió, con su declaración de no medido:
+> lo que esta nota agrega es el dato que aquel turno no podía tener, no una corrección de
+> lo que aquel turno afirmó.
+
 Lo que sí está medido es **qué las domina**. Sobre el entorno de desarrollo (Windows):
 `torch` 468 MB, `chromadb` 64 MB, `transformers` 52 MB, `langgraph` 7,6 MB, `anthropic`
 7,3 MB y `sentence-transformers` 4,6 MB — unos **604 MB exclusivos del agente**. En la imagen
@@ -187,6 +199,44 @@ CPU. Existe por tanto una palanca de tamaño del orden de un gigabyte, que es re
 contra el índice de ruedas **solo-CPU**. **No se toma en este ADR**: cambia cómo se resuelve
 una dependencia y es una decisión con alternativas, no un movimiento. Queda registrada aquí
 para que la primera cifra de tamaño del workflow no se lea como inevitable.
+
+> **Nota de estado, 2026-08-31 — la palanca se accionó, y era el doble de grande de lo que
+> este ADR estimó.** La decisión se tomó **después** de escribir este documento y por eso va
+> como nota y no dentro de la sección de decisiones. `pyproject.toml` declara ahora el índice
+> `pytorch-cpu` con `explicit = true` y resuelve `torch` contra él.
+>
+> **Efecto medido sobre la resolución**, comparando el lockfile del repositorio contra una
+> resolución idéntica sin ese índice:
+>
+> | | paquetes | ruedas de CUDA y NVIDIA, linux x86_64 |
+> | --- | ---: | ---: |
+> | Sin el índice solo-CPU | 255 | **2.094,3 MiB** en 19 paquetes |
+> | Con el índice solo-CPU *(actual)* | 236 | **0** |
+>
+> Los **19 paquetes** son los que este ADR ya había contado, y ahora se sabe cuáles: los
+> dieciséis `nvidia-*`, `triton`, y `cuda-bindings`, `cuda-pathfinder` y `cuda-toolkit`, que no
+> llevan el prefijo. Los cuatro mayores —`nvidia-cublas` 403,5 MB, `nvidia-cudnn-cu13`
+> 349,2 MB, `nvidia-cufft` 204,2 MB y `nvidia-nccl-cu13` 196,4 MB— son ya la mitad del total.
+>
+> **La estimación de este ADR —«del orden de un gigabyte»— se quedó corta por un factor de
+> dos**, y eso se registra en vez de corregirse hacia atrás: era una estimación declarada como
+> tal, y la medición es lo que la sustituye.
+>
+> **Aritmética, no una imagen construida:** sumar esas ruedas a los 2,47 GB que la imagen del
+> copiloto ocupa hoy la pone **por encima de 4,5 GB**, y por encima de esa cifra, porque una
+> rueda comprimida ocupa menos que su instalación. **Ninguna imagen se construyó con CUDA
+> dentro**, así que ese número es una suma y no una medición.
+>
+> **Reproducción:** copiar `pyproject.toml` a un directorio limpio quitando el bloque
+> `[[tool.uv.index]]` de `pytorch-cpu` y su `[tool.uv.sources]`, correr `uv lock`, y comparar
+> los nombres de paquete y los tamaños de rueda de los dos archivos de bloqueo. La resolución
+> es universal, así que las ruedas de Linux aparecen aunque se resuelva desde Windows — que es
+> la razón por la que el costo era invisible en el entorno de desarrollo.
+>
+> **Por qué `torch` se declara explícitamente en el grupo `agent` pese a que
+> `sentence-transformers` ya lo requiere:** `tool.uv.sources` solo reescribe el índice de una
+> dependencia **directa**. Dejado como transitivo, el índice se ignora en silencio y las ruedas
+> de CUDA vuelven. Es la entrada 009 de `docs/ERRORS_AND_LEARNINGS.md`.
 
 **Lo que se pierde al separar.** Una llamada que antes era en proceso ahora cruzaría la red si
 un servicio necesitara al otro. Hoy no ocurre —el copiloto carga el mismo artefacto del
