@@ -681,6 +681,35 @@ Recall 0,7187 · Precisión 0,4099 · Costo esperado 16.201 unidades de falso po
     que falta antes de un despliegue real está en la sección 8 del Model Card, empezando por
     la validación fuera de tiempo que el ADR-0001 declaró imposible con estos datos.
 
+> **Nota de estado, 2026-08-31 — existe una versión 2 en el registro, y está archivada.**
+> La fase 5 creó `scripts/run_training.py`, que delega en el mismo
+> `register_production_model.py` de esta entrada. Correrlo de verdad —única forma de verificar
+> que un tercero obtiene el mismo modelo— **añadió la versión 2**, porque un `log_model`
+> siempre agrega y nunca sobrescribe.
+>
+> **La versión productiva sigue siendo la 1**, que es la que describe `docs/MODEL_CARD.md`, la
+> que el ADR-0010 ancla en los dos contenedores y la que produjo cada cifra de este documento.
+> **La 2 queda archivada**: existe como evidencia de que el entrenamiento reproduce, no como
+> candidata. Dos versiones sin distinguir invitan a cargar la equivocada.
+>
+> **Qué demostró, medido sobre 500 solicitantes puntuados por las dos versiones:**
+>
+> | Componente | Diferencia v1 vs v2 |
+> | --- | ---: |
+> | Matriz preprocesada de 110 columnas | **0,000e+00** — idéntica |
+> | Bosque: árboles · nodos · importancias | 300 = 300 · 151.734 = 151.734 · **0,000e+00** |
+> | Puntuaciones del bosque, antes de calibrar | 1,110e-16 — ruido de acumulación entre hilos |
+> | Calibrador sigmoide `a_`, `b_` | difieren en la **octava** cifra significativa |
+> | Probabilidad final | 2,125e-09 máx · 7,207e-10 media |
+> | **Decisiones que cambian en el umbral 0,160** | **0 de 500** |
+>
+> **El bosque es reproducible al nodo; el calibrador no.** La sigmoide se ajusta con un
+> optimizador iterativo sobre puntuaciones fuera de fold que ya llevan el ruido de 1e-16, de
+> modo que arranca de datos marginalmente distintos y para en un punto marginalmente distinto.
+> El resultado es **setenta y cinco millones de veces menor que el umbral operativo**, pero es
+> **mayor** que el efecto que la sección 7.4 del Model Card registra: aquella mide el mismo
+> objeto llamado dos veces, esta mide dos ajustes independientes.
+
 ### 010 — Equidad del modelo productivo entre grupos demográficos
 
 - **Fecha:** 2026-08-26

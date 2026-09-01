@@ -759,14 +759,21 @@ develop      ●──●──●──●──●──●──●──●�
 
 - [x] Cobertura de tests ≥ 80% — **82%**, 380 tests
 - [ ] CI en verde
-- [ ] Revisión final: ningún secreto en el repo, ningún dato pesado
+- [x] Revisión final: ningún secreto en el repo, ningún dato pesado — **verificada con
+      método, no afirmada.** `.env` nunca entró en ningún commit (solo `.env.example` existe
+      como blob); los valores literales de la contraseña de MLflow y de la clave de Anthropic
+      dan **0 coincidencias** en los archivos versionados y en los 40 commits; 0 rutas de la
+      máquina de desarrollo; 0 binarios de datos en todo el historial. El objeto más pesado
+      que git ha almacenado son los notebooks, 884 KB. Comandos en el reporte del turno 4
 - [x] Verificar que el link público de MLflow/DagsHub funciona — **verificado sin
       credenciales**: la API de MLflow devuelve HTTP 200 y los cuatro experimentos. **Ojo: el
       enlace bueno es el que termina en `.mlflow`**; la página del repositorio en DagsHub es
       privada y redirige a login
 - [ ] PR de cierre `feature/05-closing` → `develop`
 - [ ] PR de release `develop` → `main`
-- [ ] **Tag `v1.0.0` con release notes redactadas**
+- [ ] **Tag `v1.0.0` con release notes redactadas** — las notas están escritas en
+      [`docs/RELEASE_NOTES.md`](RELEASE_NOTES.md); **el tag no existe todavía** y lo crea el
+      Verificador, porque un tag es una afirmación de que algo está terminado
 - [ ] **Congelar: ningún commit posterior**
 
 > ✅ **Hito 5 — Proyecto entregado.**

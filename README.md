@@ -836,6 +836,7 @@ experimentos (`credit-risk-baselines`, `credit-risk-retrieval`, `credit-risk-age
 
 | Documento | Qué contiene |
 | --- | --- |
+| [`docs/RELEASE_NOTES.md`](docs/RELEASE_NOTES.md) | La carta de presentación de la v1.0.0: qué se entrega, qué se midió, qué no funciona y qué queda fuera de alcance |
 | [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) | La metodología completa: roles, ciclo, disciplina de verificación y modos de falla propios de ML. **Dueño del contenido de `CLAUDE.md`** |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | El plan de fases y el diseño del sistema, con su trazabilidad contra la rúbrica |
 | [`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md) | Contrato de datos: las 25 columnas con rango declarado **y observado**, las discrepancias con la fuente, las 22 features derivadas y la matriz de 110 columnas |
